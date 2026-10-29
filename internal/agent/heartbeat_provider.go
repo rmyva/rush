@@ -164,10 +164,12 @@ func isHTMLProviderError(err *fantasy.ProviderError) bool {
 	return strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html")
 }
 
-var htmlTagPattern = regexp.MustCompile(`<[^>]*>`)
-var htmlTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title\s*>`)
-var htmlHiddenContentPattern = regexp.MustCompile(`(?is)<(?:style|script)[^>]*>.*?</(?:style|script)\s*>`)
-var htmlSpacePattern = regexp.MustCompile(`\s+`)
+var (
+	htmlTagPattern           = regexp.MustCompile(`<[^>]*>`)
+	htmlTitlePattern         = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title\s*>`)
+	htmlHiddenContentPattern = regexp.MustCompile(`(?is)<(?:style|script)[^>]*>.*?</(?:style|script)\s*>`)
+	htmlSpacePattern         = regexp.MustCompile(`\s+`)
+)
 
 func htmlText(body string) string {
 	body = htmlHiddenContentPattern.ReplaceAllString(body, " ")
