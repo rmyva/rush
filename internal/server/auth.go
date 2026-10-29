@@ -65,7 +65,7 @@ func (a *Auth) HandleAuth(w http.ResponseWriter, r *http.Request) {
 		// whitespace. Decode again so MaxBytesReader bounds trailing data too.
 		var extra any
 		err = decoder.Decode(&extra)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			err = nil
 		} else if err == nil {
 			err = errors.New("multiple JSON values")
