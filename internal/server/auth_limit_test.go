@@ -24,7 +24,7 @@ func TestAuthRejectsOversizedBodyWithoutDrainingIt(t *testing.T) {
 	a := newAuth()
 	bodyBytes := append([]byte(`{"token":"`+a.token+`"}`), bytes.Repeat([]byte(" "), 1<<20)...)
 	body := &countedBody{Reader: bytes.NewReader(bodyBytes)}
-	r := httptest.NewRequest(http.MethodPost, "/auth", body)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/auth", body)
 	w := httptest.NewRecorder()
 	a.HandleAuth(w, r)
 	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
@@ -33,7 +33,7 @@ func TestAuthRejectsOversizedBodyWithoutDrainingIt(t *testing.T) {
 
 func TestAuthLoginStillWorks(t *testing.T) {
 	a := newAuth()
-	r := httptest.NewRequest(http.MethodPost, "/auth", bytes.NewBufferString(`{"token":"`+a.token+`"}`))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/auth", bytes.NewBufferString(`{"token":"`+a.token+`"}`))
 	w := httptest.NewRecorder()
 	a.HandleAuth(w, r)
 	require.Equal(t, http.StatusOK, w.Code)
@@ -56,7 +56,7 @@ func TestAuthBodyBoundaryAndTrailingData(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			r := httptest.NewRequest(http.MethodPost, "/auth", bytes.NewReader(tc.body))
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/auth", bytes.NewReader(tc.body))
 			w := httptest.NewRecorder()
 			a.HandleAuth(w, r)
 			require.Equal(t, tc.status, w.Code)
