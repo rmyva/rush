@@ -261,8 +261,10 @@ const (
 		"   PRIMARY checkout so results survive the eventual worktree removal."
 	codexWrushLaunchGuidance = "Launch `rush run` with Codex's `exec_command`, setting its workdir\n" +
 		"   to the worktree — every edit, git op, and test the sub-agent runs\n" +
-		"   stays inside that tree. If `exec_command` returns a `session_id`,\n" +
-		"   retain it and block on `write_stdin` until the run finishes. Redirect\n" +
+		"   stays inside that tree. If `exec_command` returns a session handle,\n" +
+		"   retain it. Repeatedly call `write_stdin` with that handle and empty\n" +
+		"   input, blocking each time, until `rush run` exits; then read the\n" +
+		"   output files and verify the result. Redirect\n" +
 		"   `.rush/stdin/<task>.{out,err}` to the\n" +
 		"   PRIMARY checkout so results survive the eventual worktree removal."
 	claudeWcrushBackgroundGuidance = "**OOM discipline belongs to phase 2** — the other half of the same\n" +
@@ -272,8 +274,9 @@ const (
 	codexWcrushBackgroundGuidance = "**OOM discipline belongs to phase 2** — the other half of the same\n" +
 		"  bargain: `-parallel 2` for heavy packages, never two heavy runs at\n" +
 		"  once. Run long phase-2 tests with Codex's `exec_command`. If it\n" +
-		"  returns a `session_id`, retain it and wait with blocking\n" +
-		"  `write_stdin` until the test process completes."
+		"  returns a session handle, retain it and repeatedly call blocking\n" +
+		"  `write_stdin` with empty input until the test process exits. Then read\n" +
+		"  the output and verify the result."
 	claudeWcrushResumeBlock = "```\n" +
 		"rush run --role smart --session <same id> \"<permission and what to run>\"\n" +
 		"```"

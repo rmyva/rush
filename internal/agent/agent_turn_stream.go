@@ -362,7 +362,12 @@ func (ts *turnStream) onReasoningStart(id string, reasoning fantasy.ReasoningCon
 	// before that text lands. Its own Update below then persists the
 	// already-truncated state; no extra write is needed.
 	ts.truncateStaleRetryContentLocked()
-	ts.currentAssistant.AppendReasoningContent(reasoning.Text)
+	ts.currentAssistant.StartReasoningContent(reasoning.Text)
+	if anthropicData, ok := reasoning.ProviderMetadata[anthropic.Name]; ok {
+		if metadata, ok := anthropicData.(*anthropic.ReasoningOptionMetadata); ok && metadata.RedactedData != "" {
+			ts.currentAssistant.SetReasoningRedactedData(metadata.RedactedData)
+		}
+	}
 	snap := ts.currentAssistant.Clone()
 	ts.mu.Unlock()
 	return ts.a.messages.Update(ts.genCtx, snap)
@@ -389,6 +394,9 @@ func (ts *turnStream) onReasoningEnd(id string, reasoning fantasy.ReasoningConte
 	if anthropicData, ok := reasoning.ProviderMetadata[anthropic.Name]; ok {
 		if reasoning, ok := anthropicData.(*anthropic.ReasoningOptionMetadata); ok {
 			ts.currentAssistant.AppendReasoningSignature(reasoning.Signature)
+			if reasoning.RedactedData != "" {
+				ts.currentAssistant.SetReasoningRedactedData(reasoning.RedactedData)
+			}
 		}
 	}
 	if googleData, ok := reasoning.ProviderMetadata[google.Name]; ok {

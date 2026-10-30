@@ -186,6 +186,12 @@ an unrecognised model id fails on the first real provider call, exactly
 like `rush run --model` does today. OAuth-based providers (e.g. GitHub
 Copilot) are out of scope for `CredentialSet` — only a literal API key.
 
+Credentialed roots are marked in memory after admission; that marker lives
+for the lifetime of the Client. Automatic background follow-ups are skipped
+rather than sent to the Client's configured provider. Any completed work is
+delivered on the next explicit call. Delegated child sessions keep their
+per-call credential snapshot and are not affected by this root-only refusal.
+
 ## Sessions and credentials are independent axes
 
 `RunRequest.ContinueSessionID` identifies a conversation with

@@ -10,6 +10,11 @@ on:
   push:
     branches: [main, 'ci-shadow/**', 'ci-shards-shadow/**']
   workflow_dispatch:
+    inputs:
+      full:
+        description: Run full CI validation
+        type: boolean
+        default: false
 permissions:
   contents: read
 defaults:
@@ -67,36 +72,39 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           REF: ${{ github.ref }}
           FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          DISPATCH_FULL: ${{ inputs.full }}
+          BASE: ${{ steps.shas.outputs.base }}
+          HEAD: ${{ steps.shas.outputs.head }}
         run: |
-          if [ "$EVENT" = pull_request ] && [ "$BASE_REF" = main ] && [ "$FULL_CI" != true ]; then echo cheap_only=true >> "$GITHUB_OUTPUT"; echo force_full=false >> "$GITHUB_OUTPUT"; else echo cheap_only=false >> "$GITHUB_OUTPUT"; fi
-          if { [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; } || { [ "$EVENT" = pull_request ] && [ "$BASE_REF" = main ] && [ "$FULL_CI" = true ]; }; then echo force_full=true >> "$GITHUB_OUTPUT"; else echo force_full=false >> "$GITHUB_OUTPUT"; fi
+          set -euo pipefail
+          directive=false
+          if [ "$EVENT" = pull_request ]; then
+            directive="$(python3 .github/scripts/ci_gate_decide.py full-directive --base "$BASE" --head "$HEAD")"
+          fi
+          if [ "$directive" = true ] || { [ "$EVENT" = pull_request ] && [ "$BASE_REF" = main ] && [ "$FULL_CI" = true ]; } || { [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; } || { [ "$EVENT" = workflow_dispatch ] && [ "$DISPATCH_FULL" = true ]; }; then echo force_full=true >> "$GITHUB_OUTPUT"; else echo force_full=false >> "$GITHUB_OUTPUT"; fi
       - name: install selector graph dependencies
-        if: steps.lane.outputs.cheap_only != 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: false
       - name: resolve Go module cache path
-        if: steps.lane.outputs.cheap_only != 'true'
         id: go-cache
         shell: bash
         run: echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
       - name: restore Go module cache
-        if: steps.lane.outputs.cheap_only != 'true'
         id: go-mod-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.go-cache.outputs.gomodcache }}
           key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
       - name: extract platform graphs
-        if: steps.lane.outputs.cheap_only != 'true'
         run: |
           set -euo pipefail; mkdir -p .ci-plan-tmp
           GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/linux.json
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/darwin.json
           GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go list -deps -test -json ./... > .ci-plan-tmp/windows.json
       - name: save Go module cache
-        if: steps.lane.outputs.cheap_only != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-mod-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-mod-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.go-cache.outputs.gomodcache }}
@@ -107,15 +115,11 @@ jobs:
           BASE: ${{ steps.shas.outputs.base }}
           HEAD: ${{ steps.shas.outputs.head }}
           FORCE_FULL: ${{ steps.lane.outputs.force_full }}
-          CHEAP_ONLY: ${{ steps.lane.outputs.cheap_only }}
         run: |
           set -euo pipefail; mkdir -p .ci-plan-tmp
-          if [ "$CHEAP_ONLY" = true ]; then python3 .github/scripts/ci_gate_decide.py minimal-plan --base "$BASE" --head "$HEAD" --output .ci-plan-tmp/plan.json
-          else
-            python3 .github/scripts/ci_plan.py --base "$BASE" --head "$HEAD" --go-list-json linux=.ci-plan-tmp/linux.json --go-list-json darwin=.ci-plan-tmp/darwin.json --go-list-json windows=.ci-plan-tmp/windows.json --out .ci-plan-tmp/selector-plan.json --summary .ci-plan-tmp/plan.md
-            extra=(); if [ "$FORCE_FULL" = true ]; then extra+=(--force-full); fi
-            python3 .github/scripts/ci_gate_decide.py prepare-plan --plan .ci-plan-tmp/selector-plan.json --graph-dir .ci-plan-tmp --policy .github/ci-policy.toml --output .ci-plan-tmp/plan.json --base "$BASE" --head "$HEAD" "${extra[@]}"
-          fi
+          python3 .github/scripts/ci_plan.py --base "$BASE" --head "$HEAD" --go-list-json linux=.ci-plan-tmp/linux.json --go-list-json darwin=.ci-plan-tmp/darwin.json --go-list-json windows=.ci-plan-tmp/windows.json --out .ci-plan-tmp/selector-plan.json --summary .ci-plan-tmp/plan.md
+          extra=(); if [ "$FORCE_FULL" = true ]; then extra+=(--force-full); fi
+          python3 .github/scripts/ci_gate_decide.py prepare-plan --plan .ci-plan-tmp/selector-plan.json --graph-dir .ci-plan-tmp --policy .github/ci-policy.toml --output .ci-plan-tmp/plan.json --base "$BASE" --head "$HEAD" "${extra[@]}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: ci-plan, path: .ci-plan-tmp/plan.json}
   checks:

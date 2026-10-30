@@ -735,7 +735,7 @@ func summaryCompletionTokens(usage fantasy.Usage, summaryMessage message.Message
 	if usage.OutputTokens != 0 {
 		return usage.OutputTokens
 	}
-	return approxTokenCount(summaryMessage.Content().Text) + approxTokenCount(summaryMessage.ReasoningContent().String())
+	return approxTokenCount(summaryMessage.Content().Text) + approxTokenCount(summaryMessage.FullReasoningText())
 }
 
 // buildSummaryPrompt constructs the prompt text for session summarization.

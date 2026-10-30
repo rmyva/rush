@@ -29,12 +29,9 @@ def decide(event_name, base_ref, labels, mode, needed_job_results, validated_sha
         return {"verdict": "fail", "reason": f"Unsupported event: {event_name}.", "not_run": not_run}
     main_pr = event_name == "pull_request" and base_ref == "main"
     main_push = event_name == "push" and base_ref == "main"
-    if main_pr and FULL_LABEL not in labels:
-        return {"verdict": "fail", "reason": NO_FULL, "not_run": not_run}
     if mode not in ("tier1", "full"):
         return {"verdict": "fail", "reason": "Malformed plan mode.", "not_run": not_run}
-    full_required = main_push or (main_pr and FULL_LABEL in labels)
-    if main_pr and mode != "full":
+    if main_pr and FULL_LABEL in labels and mode != "full":
         return {"verdict": "fail", "reason": NO_FULL, "not_run": not_run}
     if main_push and mode != "full":
         return {"verdict": "fail", "reason": "Main push requires full validation.", "not_run": not_run}
@@ -59,7 +56,7 @@ def decide(event_name, base_ref, labels, mode, needed_job_results, validated_sha
         if unexpected: issues.append("unexpected jobs: " + ", ".join(unexpected))
         if failures: issues.append("required jobs not successful: " + ", ".join(f"{n} ({needed_job_results[n]})" for n in failures))
         return {"verdict": "fail", "reason": "; ".join(issues), "not_run": not_run}
-    return {"verdict": "pass", "reason": "Full validation passed." if full_required else "Tier 1 validation passed.", "not_run": not_run}
+    return {"verdict": "pass", "reason": "Full validation passed." if mode == "full" else "Tier 1 validation passed.", "not_run": not_run}
 
 
 def expected_jobs(plan, outputs):
@@ -166,7 +163,7 @@ def prepare_cli(args):
         "race_packages": " ".join(x for x in plan.get("race_packages", []) if x != MODULE + "/internal/agent"),
         "race_needed": any(x != MODULE + "/internal/agent" for x in plan.get("race_packages", [])),
         "agent_selected": any(x["package"] == MODULE + "/internal/agent" for x in plan["per_os"].get("linux", [])),
-        "heavy_allowed": not plan.get("cheap_only", False),
+        "heavy_allowed": True,
         "native_required": full or bool(plan.get("native_required", {}).get("required", False)),
         "validated_head": plan.get("head") or args.head, "validated_base": plan.get("base") or args.base,
         "web_changed": full or any(x.startswith("web/") for x in changed), "security_full": full,
@@ -183,14 +180,19 @@ def prepare_cli(args):
             for key, value in outputs.items(): f.write(f"{key}={str(value).lower() if isinstance(value, bool) else value}\n")
 
 
-def minimal_cli(args):
-    doc = {"schema_version": 1, "base": args.base, "head": args.head, "mode": "tier1", "per_os": {o: [] for o in OS_NAMES}, "race_packages": [], "native_required": {"required": False}, "not_run": [{"os": "all", "package_or_suite": "heavy suites", "reason": "main-bound PR requires full-ci"}], "cheap_only": True, "heavy_allowed": False}
-    doc["expected_outputs"] = {"mode":"tier1", "ubuntu_needed":False, "macos_needed":False, "windows_needed":False, "linux_packages":"", "darwin_packages":"", "windows_packages":"", "race_packages":"", "race_needed":False, "agent_selected":False, "web_changed":False, "security_full":False, "security_deps":False, "security_actions":False, "heavy_allowed":False, "native_required":False, "validated_head":args.head, "validated_base":args.base}
-    with open(args.output, "w", encoding="utf-8") as f: json.dump(doc, f, sort_keys=True, indent=2); f.write("\n")
+def commit_requests_full(messages: str):
+    """Whether commit-message text contains an exact CI: full directive line."""
+    return any(re.fullmatch(r"[ \t]*CI:[ \t]*full[ \t]*\r?", line, re.IGNORECASE) for line in messages.split("\n"))
+
+
+def full_directive_cli(args):
+    message_text = subprocess.run(["git", "log", "--format=%B", f"{args.base}..{args.head}"], check=True, capture_output=True, text=True).stdout
+    full = commit_requests_full(message_text)
+    value = str(full).lower()
+    print(value)
     target = os.environ.get("GITHUB_OUTPUT")
     if target:
-        with open(target, "a", encoding="utf-8") as f:
-            for key, value in doc["expected_outputs"].items(): f.write(f"{key}={str(value).lower() if isinstance(value, bool) else value}\n")
+        with open(target, "a", encoding="utf-8") as f: f.write(f"full_directive={value}\n")
 
 
 def _page_payloads(value):
@@ -261,33 +263,6 @@ def gate_cli(args):
             pr = run_json(["gh", "api", f"repos/{repo}/pulls/{number}"], os.environ.copy())
             labels = [x["name"] for x in pr["labels"]]
             live_head, live_base, base_ref = pr["head"]["sha"], pr["base"]["sha"], pr["base"]["ref"]
-        if event == "pull_request" and base_ref == "main" and FULL_LABEL not in labels:
-            try:
-                with open(args.plan, encoding="utf-8") as f: raw_plan = json.load(f)
-                mode = raw_plan.get("mode", "tier1") if isinstance(raw_plan, dict) else "invalid"
-            except Exception:
-                raw_plan = None
-                mode = "tier1"
-            output = decide(event, base_ref, labels, mode, {}, os.environ.get("VALIDATED_HEAD"), live_head, os.environ.get("VALIDATED_BASE"), live_base, expected_jobs=[], plan_valid=False, event_action=action, event_label=event_label)
-            jobs = {}
-            try:
-                raw_needs = json.loads(os.environ.get("NEEDS_JSON", "{}"))
-                if isinstance(raw_needs, dict):
-                    jobs = {str(name): status for name, status in raw_needs.items() if isinstance(name, str) and isinstance(status, str)}
-            except Exception:
-                pass
-            not_run = list(raw_plan.get("not_run", [])) if isinstance(raw_plan, dict) and isinstance(raw_plan.get("not_run"), list) else []
-            try:
-                if isinstance(raw_plan, dict) and isinstance(raw_plan.get("expected_outputs"), dict):
-                    _, skipped = expected_jobs(raw_plan, raw_plan["expected_outputs"])
-                    not_run.extend(skipped)
-            except (TypeError, ValueError):
-                pass
-            output["jobs"] = jobs
-            output["not_run"] = not_run
-            with open(args.output, "w", encoding="utf-8") as f: json.dump(output, f, sort_keys=True, indent=2); f.write("\n")
-            _append_summary(output)
-            return output
         with open(args.plan, encoding="utf-8") as f: plan = json.load(f)
         outputs = json.loads(os.environ["PLAN_OUTPUTS_JSON"]); needs = json.loads(os.environ["NEEDS_JSON"])
         if not isinstance(needs, dict) or not all(needs.get(k) == "success" for k in ("plan", "checks")): raise ValueError("plan/checks dependency did not succeed")
@@ -367,11 +342,11 @@ def cancel_full_cli():
 def main():
     parser = argparse.ArgumentParser(); sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("prepare-plan"); p.add_argument("--plan", required=True); p.add_argument("--graph-dir", required=True); p.add_argument("--policy", default=".github/ci-policy.toml"); p.add_argument("--output", required=True); p.add_argument("--force-full", action="store_true"); p.add_argument("--base", default=os.environ.get("BASE", "")); p.add_argument("--head", default=os.environ.get("HEAD", ""))
-    p = sub.add_parser("minimal-plan"); p.add_argument("--base", required=True); p.add_argument("--head", required=True); p.add_argument("--output", required=True)
     p = sub.add_parser("gate"); p.add_argument("--plan", required=True); p.add_argument("--output", required=True); p.add_argument("--base-ref", default=os.environ.get("PR_BASE_REF", "")); p.add_argument("--assignment")
+    p = sub.add_parser("full-directive"); p.add_argument("--base", required=True); p.add_argument("--head", required=True)
     sub.add_parser("cancel-full"); args = parser.parse_args()
     if args.command == "prepare-plan": prepare_cli(args); return 0
-    if args.command == "minimal-plan": minimal_cli(args); return 0
+    if args.command == "full-directive": full_directive_cli(args); return 0
     if args.command == "cancel-full":
         message = cancel_full_cli()
         print(message)

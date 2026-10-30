@@ -193,7 +193,7 @@ func isQuotaLimit(providerErr *fantasy.ProviderError) bool {
 // user already has.
 func turnMadeProgress(msg message.Message) bool {
 	return strings.TrimSpace(msg.FullText()) != "" ||
-		strings.TrimSpace(msg.ReasoningContent().Thinking) != "" ||
+		strings.TrimSpace(msg.FullReasoningText()) != "" ||
 		len(msg.ToolCalls()) > 0
 }
 

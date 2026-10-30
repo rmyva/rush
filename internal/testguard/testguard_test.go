@@ -17,6 +17,21 @@ func saveEnv(t *testing.T) {
 	t.Setenv(rootEnv, "")
 }
 
+func TestCleanupRetainsIsolationMarker(t *testing.T) {
+	saveEnv(t)
+
+	cleanup, err := Isolate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := os.Getenv(rootEnv)
+	cleanup()
+
+	if got := os.Getenv(rootEnv); got != root {
+		t.Fatalf("isolation marker = %q after cleanup, want %q", got, root)
+	}
+}
+
 func TestIsolatePointsGlobalStateAtTempRoot(t *testing.T) {
 	saveEnv(t)
 	t.Setenv("RUSH_GLOBAL_DIR", "real-global-dir")

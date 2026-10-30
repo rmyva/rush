@@ -11,6 +11,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -107,6 +108,9 @@ func applyDrainModelOptions(call SessionAgentCall, model Model) SessionAgentCall
 // transferred to the successful return. A lost binding fails closed typed
 // before anything runs.
 func (c *coordinator) drainCallFor(ctx context.Context, sessionID string) (SessionAgentCall, *preparedContinuation, error) {
+	if _, ok := c.subAgentDrivers.get(sessionID); !ok && c.isCredentialedRoot(sessionID) {
+		return SessionAgentCall{}, nil, fmt.Errorf("%w: session %s", ErrCredentialBindingUnavailable, sessionID)
+	}
 	if driver, ok := c.subAgentDrivers.get(sessionID); ok {
 		// §6.2 (preserved from the old wakeNoticeCall driver branch): every
 		// wake re-inherits the driver's parentSessionID's allowlist baseline

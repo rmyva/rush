@@ -334,9 +334,37 @@ func (c *coordinator) RunWithCredentials(ctx context.Context, sessionID, prompt 
 		return nil, fmt.Errorf("failed to resolve models from per-call credentials: %w", err)
 	}
 
+	setup := admissionSetupFrom(ctx)
+	ctx = WithAdmissionSetup(ctx, func(admitCtx context.Context) error {
+		if setup != nil {
+			if err := setup(admitCtx); err != nil {
+				return err
+			}
+		}
+		c.markCredentialedRoot(sessionID)
+		return nil
+	})
 	// Sub-agent spawns inside this turn (the `agent` tool, agentic_fetch)
 	// must see the same tenant credentials.
 	return c.runInternal(withCallCredentials(ctx, &callCreds), sessionID, prompt, pinned, attachments...)
+}
+
+// credentialedRoots methods are coordinator-local sticky state. Membership is
+// recorded only after the run has passed session admission.
+func (c *coordinator) markCredentialedRoot(sessionID string) {
+	c.credentialedRootsMu.Lock()
+	if c.credentialedRoots == nil {
+		c.credentialedRoots = make(map[string]struct{})
+	}
+	c.credentialedRoots[sessionID] = struct{}{}
+	c.credentialedRootsMu.Unlock()
+}
+
+func (c *coordinator) isCredentialedRoot(sessionID string) bool {
+	c.credentialedRootsMu.Lock()
+	defer c.credentialedRootsMu.Unlock()
+	_, ok := c.credentialedRoots[sessionID]
+	return ok
 }
 
 // resolveCallModels resolves a call's model snapshot through its

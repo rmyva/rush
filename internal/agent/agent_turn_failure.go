@@ -265,7 +265,11 @@ func (ts *turnStream) handleStreamFailure(
 		// Same rationale as the peakErr branch above: without this,
 		// the generic `else` below would overwrite the question/options/
 		// resume-command guidance with a bare "Provider Error: <text>".
-		awaitingMsg, awaitingDetails := awaitingAnswerStoppedFinishText(err)
+		role := ""
+		if ts.call.CallOptions != nil {
+			role = string(ts.call.CallOptions.ModelRole)
+		}
+		awaitingMsg, awaitingDetails := awaitingAnswerStoppedFinishText(err, role)
 		ts.currentAssistant.AddFinish(message.FinishReasonError, awaitingMsg, awaitingDetails)
 	} else {
 		// R2-5: this generic finish is the diagnostic path that persists
