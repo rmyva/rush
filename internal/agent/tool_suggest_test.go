@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"charm.land/fantasy"
@@ -17,7 +18,39 @@ func testAgentWithTools(names ...string) *sessionAgent {
 			return fantasy.ToolResponse{}, nil
 		}))
 	}
+	for _, tool := range tools {
+		_ = tool.Info()
+	}
 	return &sessionAgent{tools: csync.NewSliceFrom(tools)}
+}
+
+func TestAugmentUnknownToolResultConcurrentInfo(t *testing.T) {
+	t.Parallel()
+
+	a := testAgentWithTools("bash", "grep", "view", "edit")
+	const callers = 32
+	start := make(chan struct{})
+	ready := make(chan struct{}, callers)
+	results := make(chan string, callers)
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for range callers {
+		go func() {
+			defer wg.Done()
+			ready <- struct{}{}
+			<-start
+			results <- a.augmentUnknownToolResult(errResult("tool not found: gash")).Content
+		}()
+	}
+	for range callers {
+		<-ready
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	for result := range results {
+		require.Contains(t, result, `did you mean "bash"?`)
+	}
 }
 
 func errResult(content string) message.ToolResult {

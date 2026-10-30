@@ -57,7 +57,9 @@ func Isolate() (cleanup func(), err error) {
 		return nil, err
 	}
 	return func() {
-		_ = os.Unsetenv(rootEnv)
+		// The marker stays set on purpose: callers exit right after, and a
+		// background goroutine that resolves global state in that window must
+		// still see an isolated process instead of panicking after PASS.
 		_ = os.RemoveAll(root)
 	}, nil
 }

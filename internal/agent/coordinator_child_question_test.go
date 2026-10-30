@@ -62,7 +62,7 @@ func TestRunSubAgent_FirstTurnQuestionKeepsPreamble(t *testing.T) {
 	agent := &mockSessionAgent{model: c6BuildModel(t, coord, true)}
 	agent.runFunc = func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 		qe := &AwaitingAnswerError{Question: "which one?", SessionID: call.SessionID}
-		title, details := awaitingAnswerStoppedFinishText(qe)
+		title, details := awaitingAnswerStoppedFinishText(qe, "smart")
 		_, createErr := env.messages.Create(ctx, call.SessionID, message.CreateMessageParams{
 			Role: message.Assistant,
 			Parts: []message.ContentPart{

@@ -2,570 +2,94 @@
 description: Delegate this task to a rush sub-agent instead of doing it yourself
 ---
 
-This skill is **opt-in only** — invoked by typing `/rush <task>` (or
-"delegate this to rush"). Build a `rush run` and launch it within
-this single invocation. **Do NOT auto-invoke on later turns**: if the
-user didn't type `/rush` again, they chose to handle the follow-up
-with you directly.
+**Opt-in only:** run `/rush <task>` (or “delegate this to rush”) once; never auto-invoke on follow-ups unless asked again.
 
-## When NOT to delegate (even after /rush)
+## When not to delegate
+Refuse in one sentence and offer direct help for interactive merges/conflict resolution/design/debugging, work dependent on this chat's decisions/files/partial state, requests where the user supplied the fix (you must verify it), one- or two-line changes, or a plan being worked out with the user.
 
-Refuse, say so in one sentence, and offer to do it directly:
-
-- **Interactive by nature** — merges, conflict resolution, design or
-  debugging needing back-and-forth. A sub-agent cannot stop and ask.
-- **Depends on this chat's context** — files just read, decisions made
-  earlier, partial state. A sub-agent starts cold.
-- **The user gave the answer** — "fix it like this" wants *your* hands
-  so you can verify the assumption.
-- **One- or two-line work** — delegation overhead > the change.
-- **Mid-plan with the user** — keep the plan coherent in one head.
-
-## Give `smart` the task, then wait — do not drive it
-
-`rush run --role smart` is an orchestrator, not a tool you steer. It reads
-the repository itself, plans, delegates hands-on work to its workers,
-reviews their output and reports back. Your job is to say **what** is
-needed and **why**; working out **how** is its job.
-
-- **Launch it in the repo (or the worktree) with the task and wait** for
-  the completion notification. That is the whole interaction.
-- **The prompt states the goal, not the method:** the problem or the
-  feature, the observable acceptance criterion, the evidence you already
-  have (error text, a failing test, a reproduction), and hard constraints
-  (scope boundaries, what must not be touched, the operator's rules). Do
-  not write implementation plans, file:line edit lists, "one worker at a
-  time", step-by-step procedures, instructions on how to use its tools,
-  workers or roles, or hints on how to verify its own work.
-- **Do not tune it:** no extra flags beyond `--role`, `--session`,
-  `--json` (and `--restrict-run` when scoping is genuinely needed); do not
-  switch its models, efforts or `--agents` mode to "help" it.
-- **Do not steer it mid-run.** `sessions inject` is for a genuinely new
-  fact or a changed requirement from the operator, not for coaching.
-- **A follow-up round passes facts, not a re-plan:** the reviewer
-  findings, the CI failure output or the operator's new requirement,
-  verbatim, into the same `--session`.
+## Smart means launch and wait
+`rush run --role smart` reads the repo, plans, delegates, reviews, and reports. Tell it **what and why** (goal, observable acceptance, evidence, hard scope/constraints), not how. Launch in repo/worktree and await completion. Do not prescribe implementation plans, file:line edits, sequence, tools/roles/workers, verification, or forbid its internal delegation. Nested executors are expected: don't stop or ask; wait.
+Only `--role`, `--session`, `--json`, and when warranted `--restrict-run`; don't tune models/effort/`--agents`. Don't coach mid-run: `sessions inject` is only for genuinely new facts or changed operator requirements. A follow-up passes reviewer findings, CI output, or new requirements verbatim into the same `--session`.
 
 ## Fallback when `rush` hits rate limits
 
-If the operator has armed `/rush-fallback <agent>`, a hard window/quota
-limit — weekly/monthly budget gone, account suspended, or "context
-window exceeded"/"quota exceeded" with no retry-after inside this
-session — is one of its two triggers: switch to that agent immediately
-and silently, per that command's "Trigger 2 — hard limit". Don't ask,
-don't request the refusal text.
+When using Claude, an armed `/rush-fallback <agent>` means switch to that agent immediately and silently on either trigger: peak-hours refusal (match `is in peak hours (` in failed-run stderr or JSON `.error`) or hard limit (weekly/monthly budget exhausted, suspension, or context/quota exceeded without a retry-after in this session). This fallback never authorizes `--allow-peak-hours`; add that flag only when a human explicitly authorizes it in this request.
 
-If no fallback is armed, report the limit to the operator and stop —
-never pick a sub-agent to re-route to on your own initiative.
-
-**Do NOT fall back** for transient/recoverable failures — re-run
-instead:
-
-- your own `--timeout` fired — re-run `rush run` against the **same
-  `--session` id** with a larger `--timeout`.
-- `--idle-timeout` fired (agent went quiet for 15m+, the default) —
-  re-run against the same `--session` id once; if it fires again on
-  the same task, that's a real stuck-agent signal, not noise — stop
-  and report it instead of retrying blindly.
-- situational HTTP 429 with short retry-after — wait it out, re-run.
-- 5xx / network blip — re-run; escalate to the user if it persists.
-- operator-side errors (bad flag, missing workspace, malformed prompt)
-  — fix the invocation, retry.
-
-The local-agent fallback is the **last resort**, not a shortcut around
-transient failures.
+**Hard limit (all CLI targets):** exhausted weekly/monthly quota, suspended account, or context/quota exceeded with no retry-after that lands within this session. With no armed fallback, deny the reroute immediately: report exact error, provider, and retry/reopen time if supplied; stop and wait for human direction. Do not prompt for permission to bypass or choose a route. Claude's armed fallback is the sole automatic exception described above; other CLIs cannot arm it.
+Never fallback for recoverable issues: larger `--timeout` in same session if yours fired; retry once in same session after default-15m `--idle-timeout`, then report if repeated; wait/retry short 429; retry 5xx/network blips and escalate if persistent; fix bad flags/workspace/prompt. Local fallback is last resort.
 
 ## Never self-add `--allow-peak-hours`
-
-A provider can refuse to run during a local-time window (`rush
-providers set <id> --peak-hours HH:MM-HH:MM`, overnight wrap allowed,
-`--peak-hours off` clears it; `--peak-hours-message "..."` sets a
-custom refusal note and `--peak-hours-message ""` clears it — both
-honor `--local`). `rush run --allow-peak-hours` bypasses that refusal
-for one invocation only — no persistent config-level equivalent
-exists.
-
-**Never add `--allow-peak-hours` on your own initiative.** Only pass it
-when a human operator has explicitly asked, in this specific request,
-to override peak hours for that task. If a run refuses this way and
-the user hasn't authorized a bypass, report the refusal and the
-retry-after time and wait for their decision — do not route around it
-by adding the flag, switching provider, or re-running until the window
-closes, unsolicited.
+`rush providers set <id> --peak-hours HH:MM-HH:MM` configures the provider's local-time window (overnight allowed; `--peak-hours off` clears); `--peak-hours-message "..."` sets and `--peak-hours-message ""` clears the note; both honor `--local`. `rush run --allow-peak-hours` bypasses one invocation only; no persistent equivalent. Never add it unless a human explicitly authorizes it in this request. Without armed fallback, report refusal/retry-after and wait; don't switch providers, add the flag, or rerun until the local-time window closes. Armed Claude fallback switches as specified above.
 
 ## Resuming after `exit_reason: "awaiting_answer"`
-
-A `rush run --json` session can force-finish its turn with
-`"exit_reason": "awaiting_answer"` because the sub-agent called its
-`ask_question` tool. **This is not a crash, and it is a different
-situation from the rate-limit / peak-hours refusal above** — the
-agent didn't fail or get blocked by a provider, it deliberately
-stopped because it needs an answer to something it can't decide on
-its own.
-
-The question — and the exact resume command — live in `.error`, not
-`.final_text` (final_text is typically empty for this stop reason;
-that's expected, not a bug):
-
+`rush run --json` may force-finish with `exit_reason: "awaiting_answer"` when its own agent calls `ask_question`; this is deliberate, not a crash/provider refusal. `.error` includes the question, suggested options (if any), and ready resume command; `.final_text` is usually empty:
 ```
 jq -r '.error' .rush/stdin/<task>.out
+rush run --role <original-role> --session <id> "<your answer>"
 ```
-
-`.error` carries the question, any suggested options, and a
-ready-to-run resume line with the session id already filled in:
-
-```
-rush run --session <id> "<your answer>"
-```
-
-Use that command as-is — don't invent your own syntax for resuming.
-
-Decide who answers, same judgment call as `--allow-peak-hours` above:
-
-- **Answerable from context you already have** (the task as given,
-  decisions already made this chat, files already read) → answer it
-  yourself and resume immediately. Don't stall on something you
-  already know.
-- **Genuinely the operator's call** (a real product/design/risk
-  decision, not something implied by the task) → surface the question
-  to the human verbatim and wait for their answer before resuming. Do
-  not guess on their behalf.
-
-Resume with a **fresh `rush run --session <id> "<answer>"`, not
-`sessions inject`** — the process that asked the question already
-exited when the turn force-finished (that's what "exiting now" in the
-guidance text means), so there is no live holder left to inject a
-message into. A fresh `rush run` against the same `--session` id
-picks the conversation back up exactly where `ask_question` left off.
+Use the resume command above with the original role. Answer from known task/chat/files context yourself; for genuine product/design/risk choices, surface the question and suggested options verbatim to the operator and wait. Resume with a fresh `rush run --role <original-role> --session <id> "<answer>"`, never `sessions inject`: the asking process exited, and same session resumes it. **Do not issue a resume command while its live background jobs remain**: the run cannot exit yet; it gets a hint to finish without tool calls, receives job results, and continues. Resume only after it actually exits with `exit_reason: "awaiting_answer"`. `STALLED` status alone is not a resume signal; do not confuse it with `exit_reason: "stalled"`.
 
 ## Orchestrator mode — and why a worker's question is NOT your problem
+With `--role smart` and configured worker (`rush models use ... --worker <model>`), Rush restores the `agent` tool despite its default sub-agent ban; `agentic_fetch` remains banned. Orchestrator mode delegates hands-on edits/writes/commands in worker-context-sized chunks and treats every report as a CLAIM: independently verify actual diff/test evidence.
+A configured worker overrides `--agents single` for smart; that flag only prevents delegation without a worker or outside smart. For a hard no-delegation guarantee, don't configure a worker.
+Configured reviewer adds one final review turn to successful smart runs and reviews the whole session; executor text remains `final_text`, reviewer conclusion is additive in JSON `review` (empty if none). Failed/canceled/timed-out/queued runs unchanged; explicit reviewer role isn't extended; override isn't persisted. Unconfigure reviewer to disable.
 
-When `--role smart` is used and a `worker` model is configured (`rush
-models use ... --worker <model>`), the launched `rush run` auto-lifts
-its default sub-agent ban for the `agent` tool specifically —
-`agentic_fetch` stays banned either way, that's an unrelated concern.
-Rush's own coder model is then instructed (an "Orchestrator mode" rule
-in its system prompt) to delegate hands-on work — editing, writing,
-running commands — to worker sub-agents via the `agent` tool in chunks
-sized to fit the worker's context window, rather than editing everything
-itself, and to treat every worker's report as a CLAIM: re-check the
-actual diff/test result zero-trust, not just trust the worker's "done".
+**Worker questions are not top-level questions.** A worker's `ask_question` doesn't exit Rush: the orchestrator receives and handles questions from workers reachable directly or indirectly through nested delegation, and continues. You see no prompt or resume task. Never inject into a worker child session. By contrast, the top-level question above exits (unless own jobs are running) and requires your fresh same-session resume.
 
-**A configured worker always wins this, even over an explicit `--agents
-single`.** Passing `--agents single` does NOT force single-agent mode
-when a worker is configured for `--role smart` — the `agent` tool gets
-restored regardless. `--agents single` only has teeth when no worker is
-configured (or the run isn't `--role smart`). Don't rely on `--agents
-single` as a hard guarantee against delegation; if you genuinely need
-that guarantee, don't configure a worker for the run.
-
-**Reviewer auto-pass:** when a `reviewer` model is configured, a
-successful `--role smart` run is automatically continued with one more
-turn on the Reviewer model that reviews the whole session and ends with
-its own conclusion. The executor's own last answer stays `final_text`;
-the reviewer's conclusion is carried additively in the `review` field of
-the `--json` envelope (empty when no reviewer ran). Failed,
-canceled, timed-out, or queued runs are returned unchanged; an explicit
-`--role reviewer` invocation is never extended; the reviewer override
-is never persisted on the session. Unconfigure the reviewer to turn
-the pass off.
-
-**The one distinction you must never blur:** a worker sub-agent calling
-`ask_question` mid-delegation is completely different from the
-top-level question flow documented above, and it does **not** surface
-to you at all.
-
-- **Top-level question** (documented above): the `rush run` process
-  you launched calls `ask_question` itself. There is nobody left inside
-  the process to answer it, so the process force-finishes its turn and
-  **exits** with `exit_reason: "awaiting_answer"`. You see this as your
-  background command completing, and you must resume it yourself with
-  a fresh `rush run --session <id> "<answer>"`. Exception: if the agent
-  still has its OWN running background tasks (bash jobs),
-  the tool refuses to end the run — the model gets a hint to finish the
-  turn without tool calls instead, the tasks' results arrive as
-  messages, and the run continues on its own.
-- **Worker sub-agent's question**: a worker delegated to via the
-  `agent` tool calls `ask_question` on its own turn. This does **not**
-  make the `rush run` process exit — it stays alive. Rush's own
-  orchestrating model receives the question immediately as a message
-  (a tool result, or a `child_question` notice even while the worker's
-  own background tasks are still running) telling it to resume the
-  worker via `resume_session_id`, and —
-  driven by its own orchestrator-mode instructions — answers it and
-  keeps going automatically, inside the still-running process. You
-  never see this happen, your background command keeps running, and
-  there is nothing for you to resume or answer.
-
-Do not try to `sessions inject` into a worker's child sub-session
-directly to answer its question — it isn't meant to be addressed
-externally; rush's own orchestrating model already owns that resume.
-
-## Launching
-
-- `--role smart` for non-trivial, `--role fast` for one-liners. Two more
-  roles exist, both optional and never auto-selected: `--role worker`
-  (the cheap slot for delegated hands-on sub-task work — reachable
-  directly, or indirectly when `--role smart` triggers orchestrator
-  mode, see below) and `--role reviewer` (the strongest configured
-  slot, for an explicit one-off strong-review invocation, e.g. `--role
-  reviewer --session "pr-42-review" "review this diff"`). Configure
-  them with `rush models use <smart> <fast> --worker <model>
-  --reviewer <model>` (the two positional args are still required;
-  `--worker`/`--reviewer` are additive flags on the same command) —
-  not the plain two-positional form, which only touches smart/fast.
-- Stable, task-meaningful `--session` id (issue/branch/topic slug) —
-  same id continues across runs and is recognisable in `sessions watch`.
-  Make it unique across the PROJECT: all linked git worktrees of one
-  project share one sessions database (`<main>/.rush`), so an id from a
-  finished task would be resumed, not created. A session belongs to the
-  checkout that created it: `--session <id>` from another checkout is
-  refused (`belongs to <root>`); to continue that history there use
-  `rush sessions fork <id> --cwd <path>`.
-- No `--timeout` needed — a launched run has no `--timeout` deadline by
-  default (only a 6 h wall-clock cap, see "Time limits" at the bottom); it
-  ends on its own once the task is done. `--idle-timeout`
-  (default 15m, see the bottom of this file) already ends a genuinely
-  stuck run for you, so don't add `--timeout` "just in case".
-- Run in the background (`Bash` `run_in_background: true`), redirect
-  to `.rush/stdin/<task>.{out,err}`, react on the completion
-  notification. Don't sleep-poll for output — do run the liveness
-  watchdog below.
-- **Never background the process yourself with a trailing `&`.** The
-  Bash call must be the bare `rush run ...` command, passed with
-  `run_in_background: true` on the tool call — nothing else. `&` (plus
-  anything after it, e.g. `echo`) makes Bash track the *wrapper shell*,
-  which exits instantly on detach — so "completed" fires before
-  `rush run` finishes. That false-done signal is what causes a second
-  `rush run` into the same still-locked `--session` (`already in use`
-  / lock races / crashed sessions). One command per Bash call, no `&`:
-
-  ```
-  # Correct
-  Bash({ command: "rush run --role smart --session foo --json < .rush/stdin/foo.prompt > .rush/stdin/foo.out 2> .rush/stdin/foo.err", run_in_background: true })
-
-  # Wrong — false-completes instantly, invites session-id reuse before the real process exits
-  Bash({ command: "rush run ... > out 2> err &\necho launched pid $!", run_in_background: true })
-  ```
-
-- Multi-line prompts → `Write` to `.rush/stdin/<task>.prompt`, feed
-  via `< file`. Avoid positional `"…"` past one line.
-- Permissions inside `rush run` are auto-approved — run only in
-  workspaces you can afford to lose. See `--restrict-run` below to
-  scope a specific delegation instead of relying on workspace choice
-  alone.
-- **Default to one `rush run` in flight at a time per worktree.**
-  Sequential is the safe default — launch, wait for the real
-  completion notification, verify, then launch the next. Only run more
-  than one concurrently when the task genuinely decomposes into
-  independent file-sets AND the user asked for parallelism (or the
-  task explicitly calls for a fan-out).
-- **Parallel runs** MUST name the file-set each prompt may touch
-  ("only edit `internal/foo/`") — two runs writing the same file race
-  and corrupt silently.
-- **Parallel runs MUST warn each agent about the others** — name the
-  sibling runs and their scopes in every prompt, e.g. "You are one of
-  N agents working concurrently on this repo. Others: `run-b` (scope:
-  `internal/server/`), `run-c` (scope: `web/src/`). Stay strictly
-  inside your own scope; don't touch files outside it even if
-  something looks related." An agent unaware it's sharing the tree
-  will "helpfully" touch a file it saw referenced elsewhere.
-- **Parallel runs MUST forbid git writes** — no `commit`, `add`,
-  `stash`, `reset`, `checkout`/`restore`, `rebase`, `merge` in any
-  prompt; concurrent index/tree writes clobber each other
-  (`index.lock` races, one run's `checkout` reverting another's
-  edits). Read-only git (`status`/`diff`/`log`) is fine. The
-  orchestrator stages and commits **sequentially, itself**, after all
-  runs finish and each diff is verified. When edits genuinely overlap,
-  give each run its own `git worktree`.
-- **Parallel runs MUST run tests isolated to their own scope, or not
-  at all** — each prompt runs tests only for its assigned package(s)
-  (e.g. `go test ./internal/foo/...`, never `./...`); concurrent test
-  runs across a module can race on shared build cache/fixtures. If a
-  run can't scope its tests narrowly, it skips them and says so in its
-  summary — the orchestrator runs the shared suite once, after all
-  runs land and are merged.
+## Launching (Claude)
+Use `--role smart` for non-trivial work, `fast` for one-liners; worker roles are optional and may be reached directly or indirectly through smart orchestration; reviewer is optional. Neither role is auto-selected. The `rush models use` configuration command accepts `--worker <model>` or `--reviewer <model>` without positional arguments; example combined configuration: `rush models use <smart> <fast> --worker <model> --reviewer <model>`. Example reviewer-only run: `rush run --role reviewer --session "pr-42-review" "review this diff"`.
+Use stable task-meaningful session IDs, unique across the project: linked worktrees share `<main>/.rush`, so old IDs resume. Session belongs to creating checkout; another checkout gets `belongs to <root>`; use `rush sessions fork <id> --cwd <path>` to continue there.
+No `--timeout` by default (0; six-hour wall cap); `--idle-timeout` defaults 15m. Don't add arbitrary timeout.
+Run with Claude `Bash` `run_in_background: true`, redirect output/error to `.rush/stdin/<task>.out` and `.err`. Launch one run at a time; wait for its real completion notification, verify that run and its diff, then launch the next. Never sleep-poll or launch a duplicate into a live/unknown session. After all runs have finished and each diff is verified, stage/commit yourself, sequentially. If independent fan-out is necessary, keep scopes isolated and do not stage/commit until all runs have actually finished and every diff is verified. Bash command must be bare `rush run ...`; never append `&`/wrapper (false completion causes duplicate locked-session launches). One command per call:
+```
+Bash({ command: "rush run --role smart --session foo --json < .rush/stdin/foo.prompt > .rush/stdin/foo.out 2> .rush/stdin/foo.err", run_in_background: true })
+```
+Write multiline prompt to `.rush/stdin/<task>.prompt`, feed `< file`; avoid multiline positional quotes. Rush permissions are auto-approved: use only workspaces you can lose; consider `--restrict-run`.
+Default one run per worktree. Parallelize only for independent file sets when user asks or task requires fan-out. Every prompt must name its scope and siblings/scopes, forbid touching other scopes, and forbid git writes (`commit`, `add`, `stash`, `reset`, `checkout`/`restore`, `rebase`, `merge`); read-only `status`/`diff`/`log` okay. Orchestrator stages/commits sequentially after verifying diffs. Use separate worktrees for overlapping edits. Tests must stay within assigned packages (e.g. `go test ./internal/foo/...`, never `./...`) or be skipped and reported; run shared suite once after merge.
 
 ## Scoping permissions for a delegation — `--restrict-run`
-
-Auto-approve-everything is the default (see the bullet above) because
-nobody is at the keyboard to confirm. For a delegation you don't want
-to hand full rein — an experimental/exploratory prompt, a run whose
-prompt came from outside this conversation (e.g. relayed from an
-issue or another tool), or anything touching a workspace wider than
-the task needs — flip to deny-by-default and carve out exactly what's
-allowed:
-
+Permissions auto-approve by default. For untrusted/exploratory prompts or overly broad workspaces, use deny-by-default:
 ```
-rush run --restrict-run --role fast \
-          --allow-tool view \
-          --allow-bash 'git diff' --allow-bash 'glob:go *' \
-          --session "ci-123" "summarize the diff"
+rush run --restrict-run --role fast --allow-tool view --allow-bash 'git diff' --allow-bash 'glob:go *' --session "ci-123" "summarize the diff"
 ```
-
-- `--restrict-run` arms deny-by-default. Anything not matched below is
-  denied **cleanly and immediately** — the model sees a fast "no" and
-  adapts, instead of sitting on a permission prompt nobody can answer
-  until `--idle-timeout` eventually notices the silence.
-- `--allow-tool <name>` (repeatable) permits a non-bash tool or a
-  `tool:action` pair, e.g. `view`, `edit:write`. `bash` /
-  `bash:execute` listed here are silent no-ops by design — bash is
-  scoped by `--allow-bash` only, so a tool-name entry can't
-  accidentally whitelist arbitrary shell.
-- `--allow-bash '<pattern>'` (repeatable) permits a bash command.
-  Forms: `'cmd args'` (word-boundary prefix — `'git diff'` matches
-  `'git diff HEAD~1'` but not `'git difftool'`), `'exact:cmd'`,
-  `'glob:pat'`, `'regex:pat'`. The first three refuse to match a
-  command containing shell-chaining metacharacters (`;`, `|`, `&&`,
-  `` $( ``, `` ` ``), so `--allow-bash 'ls'` cannot authorise
-  `'ls && rm -rf /'`. Only `regex:` is exempt from that guard — reach
-  for it deliberately, not as the default choice.
-- `run_command` (single program + argv, no shell) is scoped by
-  `--allow-bash` patterns exactly like `bash` — its program and
-  arguments are synthesized into one command string for matching.
-  `git_read` can't run arbitrary commands (fixed read-only git
-  subcommands only), so it needs no command-pattern scrutiny and is
-  gated at the coarse `--allow-tool git_read` level like other
-  read-only tools.
-- The same policy can be seeded persistently in `rush.json` instead of
-  repeated on every invocation:
-  ```json
-  { "permissions": { "run": {
-      "restrict": true,
-      "allow_tools": ["view"],
-      "allow_bash": ["git diff", "glob:ls *"]
-  }}}
-  ```
-  CLI flags union with config — `--restrict-run` forces restrict on
-  even if config's `restrict` is false, and the allow-lists merge.
-- `permissions.allowed_tools` (the plain, non-`run`-scoped setting) is
-  a separate, earlier-checked global bypass that still wins over this
-  gate — listing `bash` there approves every bash command regardless
-  of `--restrict-run`. Leave it clear of `bash` when `--allow-bash`
-  should be the one actually governing.
-- Only affects non-interactive `rush run` — interactive TUI/web
-  sessions are never restricted this way.
-
-Unlike `--allow-peak-hours`, this is not gated behind an explicit
-human ask — it narrows the blast radius rather than bypassing a
-safety refusal, so add it on your own judgment whenever a delegation's
-prompt or target workspace warrants less than full auto-approve.
+`--allow-tool <name>` repeats for non-bash tools or `tool:action` (e.g. `view`, `edit:write`); `bash`/`bash:execute` are no-ops. `--allow-bash '<pattern>'` repeats: word-boundary prefix (`git diff` matches `git diff HEAD~1`, not `git difftool`), `exact:cmd`, `glob:pat`, `regex:pat`. First three reject chaining metacharacters (`;`, `|`, `&&`, `$(`, backtick); regex alone bypasses guard, use deliberately. `run_command` program+argv is synthesized and matched like bash. `git_read` supports fixed read-only git commands and needs only `--allow-tool git_read`. Any tool call or command not matched by an allow rule is denied immediately; there is no permission prompt.
+Equivalent `rush.json`: `{"permissions":{"run":{"restrict":true,"allow_tools":["view"],"allow_bash":["git diff","glob:ls *"]}}}`. CLI lists union with config; `--restrict-run` forces restrict on. Global non-run `permissions.allowed_tools` is an earlier bypass: `bash` there approves all shell regardless, so leave it clear when patterns should govern. Applies only to noninteractive `rush run`, not TUI/web. Add restrict when appropriate without human authorization: narrows risk, unlike peak-hours bypass.
 
 ## Monitoring
-
-`rush sessions watch` is the primary monitor — auto-detects end and
-prints a summary (duration, tokens, cost); unlike `sessions tail
---follow` it never hangs on a dead lock.
-
-A fresh pulse means alive, not progressing. Trust STALLED / last
-activity from `sessions why`; on exit_reason=stalled resume with
---session.
-
-With orchestrator mode active (see above), `sessions watch`/`sessions
-tree` may show child sessions (worker delegations) appearing and
-disappearing over the course of a single `rush run` invocation — that
-is expected, not a sign of something wrong. Don't try to `sessions
-inject` into one of those child sessions directly; it isn't meant to be
-addressed externally.
-
-```
-rush sessions watch              # interactive picker → live-tail
-rush sessions watch <id>         # live-tail directly (short hash ok)
-```
-
-Live-tail shows tool calls with their key arguments inline:
-
+`rush sessions watch` is primary: auto-detects end, summarizes duration/tokens/cost, unlike `sessions tail --follow` doesn't hang on dead locks. `rush sessions watch` opens picker; `watch <id>` tails directly (short hash okay). Fresh pulse means alive, not progress; trust `sessions why` for STALLED and check its last-activity evidence. Resume the same session with `--session` only after it exits with `exit_reason: stalled`; a `STALLED` status alone is not that exit reason. Watch/tree may show transient worker child sessions; expected, don't inject into them.
+Live-tail shows tool calls with key arguments inline:
 ```
 [tool: bash] go test ./internal/agent/...
 [tool: edit] internal/cmd/sessions.go
 [tool-result: edit] internal/cmd/sessions.go: <result> (+3 lines)
 ```
+Read-only alternatives: `sessions list` (STATUS), `locks` (`alive`/`ping`/`stopping`/`offline`/`between turns`; lock held only during turn, so offline alone doesn't mean dead), `show <id> --with-messages`, `last <id> [--n N]`, `why <id>` (prefer its explanation to cross-checking list/locks). `Ctrl+C` in watch reports `(interrupted — session still running)` without a summary.
 
-Read-only secondaries: `sessions list` (STATUS column), `sessions
-locks` (heartbeat: `alive`/`ping`/`stopping`/`offline`/`between turns`; the lock is
-held only during a turn, so `offline` alone does not mean the process
-died), `sessions show
-<id> --with-messages`, `sessions last <id> [--n N]`, and `sessions why
-<id>` (plain-language explanation of why a session has the status it
-has — reach for this before manually cross-referencing `list`/`locks`).
+**Liveness watchdog:** check about every 10 minutes while runs are live with `rush sessions why <id>` and `rush sessions locks <id>`; this probes liveness, not output. Offline/stopping/aging lock is normal between turns while waiting on bash job, delegation, or retry. `why` reporting `running` means keep waiting; `crashed` means process gone. For batches, `batch live` means work remains; `batch unknown` (incomplete read) means the batch read did not establish state. Never relaunch a live or unknown session/batch. `batch unknown` (incomplete read) is not termination evidence. Inspect output and `sessions last` only after confirmed process termination; relaunch same session only then.
+Never relaunch into a live or unknown session: completion may describe a rejected duplicate, and incomplete batch reads are not evidence of termination. Confirm process termination with `why` or `show <id> --with-messages`; never infer it from completion or `locks offline`. For batches, require state other than `live` or `unknown` before relaunch; `batch unknown` (incomplete read) is not a terminated state. Nudge live runs with `rush sessions inject <id> -m "<msg>"` (`--interrupt` to cut in).
+**Tear the watchdog down when it has nothing left to watch.** Once a session finishes, if you're not launching a replacement and no other `/rush` runs are in flight, drop the liveness loop. Re-arm it only when you launch the next run.
 
-`Ctrl+C` in `watch` prints `(interrupted — session still running)`
-without a summary — deliberate, so "I stopped watching" never reads as
-"session ended".
-
-**Liveness watchdog — check every ~10 minutes.** A launched run has no
-`--timeout` deadline by default (only the 6 h cap), so don't just wait for the completion
-notification — a healthy long task and a silently-dead process look
-the same from the outside until something checks. Probe the session is
-still alive periodically:
-
+## Steering: `sessions inject`
+Send new context to an existing run without killing/relaunching:
 ```
-rush sessions why <id>     # running / at rest / done / crashed, with the evidence
-rush sessions locks <id>   # heartbeat: alive / ping / stopping / between turns / offline
-```
-
-This is a liveness probe, not output polling — the completion
-notification still delivers the result. Do NOT read `offline`/`stopping`
-as "the holder died": the session lock is held only during a turn, so a
-healthy run waiting on a background job (every CLI `bash` is one), a
-delegation or a paced retry shows an aging lock, `offline`, between its
-turns. Ask `rush sessions why <id>` first: `running` (it names the loop's
-PID and what it waits on) means alive — keep waiting; only `crashed`, or
-`at rest`/`done (stale lock)` with no completion notification, means the
-process is gone. Then stop waiting, inspect `.rush/stdin/<task>.{out,err}`
-and `rush sessions last <id>`, and re-launch into the same `--session`
-rather than waiting indefinitely on a dead process.
-
-**Tear the watchdog down when it has nothing left to watch.** The
-10-minute cycle exists only to babysit live runs. Once a session
-finishes — and you're not launching a replacement and no other
-`/rush` runs are in flight — drop the liveness loop; an idle watchdog
-is just noise. Re-arm it only when you launch the next run.
-
-**Never re-launch `rush run --session <id>` into a session that's already
-busy** — a fresh `rush run` against a live lock either queues confusingly
-or fails fast, and a background-tool "completed" notification then only
-reflects that rejected/duplicate launch, not the real session's progress.
-Before treating a session as idle or stuck, confirm with `rush sessions
-why <id>` (running / at rest / crashed) or `rush sessions show <id>
---with-messages` — never infer state from a completion notification
-alone, and never from `locks` `offline` alone (a loop between turns holds
-no lock). To nudge a live session, use `rush sessions inject <id> -m
-"<msg>"` (`--interrupt` to cut in), not another `rush run`. Only relaunch
-once `sessions why` says the session is not running (a stale lock alone is
-not proof; `sessions locks`/`reap`).
-
-## Steering a running session — `sessions inject`
-
-Hand a **new message to a run already in flight** in another process,
-without killing and relaunching it — to correct course, add a
-forgotten constraint, or answer a question the agent surfaced mid-run.
-
-```
-rush sessions inject <id> -m "also update the CHANGELOG"     # merge
-rush sessions inject <id> -f ./notes/next-step.md            # from a file
+rush sessions inject <id> -m "also update the CHANGELOG"
+rush sessions inject <id> -f ./notes/next-step.md
 rush sessions inject <id> -m "stop — wrong approach" --interrupt
 ```
+ID is launch `--session` (short hash okay). Default merge arrives next provider step without canceling current turn; `--interrupt` cancels current turn and restarts with message plus prior output. It persists as a normal user message visible in watch/last/web. If not running, persists for next run. Waiting between turns on job/delegation/retry counts as running (`running:true`, `between_turns:true`); no turn to cancel, message reaches next loop turn or next run. Cross-process via session DB; add `--json` for `{session_id,message_id,running,status}` and, between turns, `between_turns`/`driver_pid`.
 
-- `<id>` is the same `--session` id you launched with (short hash ok).
-- **Default (merge):** spliced into the run's **next provider step** —
-  current turn is NOT cancelled. Cheapest way to feed extra context;
-  latency is one step.
-- **`--interrupt`:** cancels the in-flight turn and immediately
-  restarts it with the new message on top of everything produced so
-  far. Use when the current direction is wrong and shouldn't finish.
-- Persisted as a normal **user** message (shows up in
-  `sessions watch`/`last` and the web UI exactly as if typed there).
-- If the session is **not currently running**, the message is still
-  persisted and picked up next time that session id runs — the
-  command tells you so instead of failing.
-- A `rush run` loop **waiting between turns** (on a job, a delegation or a
-  retry) counts as running: the result says `running: true` and
-  `between_turns: true`; no turn is in flight to cancel, so the message
-  reaches the loop's next turn if it runs one (otherwise the session's
-  next run).
-
-Works cross-process: writes to the session DB, and the running `rush
-run` (or web server) owning that session picks it up. Add `--json` for
-a machine-readable `{session_id, message_id, running, status}` result (plus
-`between_turns` and `driver_pid` for a loop between turns).
-
-## Repo-wide default system prompt
-
-If `./.rush/system-prompts/default.md` exists, `rush run` auto-loads
-it as the system prompt when neither `--system-prompt` nor
-`--system-prompt-file` was passed. Use it to commit one set of "always
-apply" rules per repo (stay in scope, end with a final assistant
-message, never commit/push, run the tests, surface ambiguity). Explicit
-`--system-prompt-file` always wins.
-
-`rush models efforts [model]` (list/validate reasoning-effort levels a
-model supports) and `rush models bump <smart|fast|worker|reviewer>
-<up|down>` (step a role's effort one level) also exist — see README.md's
-`rush models` section for the full picture, not repeated here.
+## Repo defaults and model effort
+`./.rush/system-prompts/default.md` auto-loads when no non-empty `--system-prompt` or `--system-prompt-file` content is provided; an explicitly empty prompt does not suppress the repo default. A non-empty explicit prompt or file takes precedence. Use repo-wide always-rules (scope, final message, no commit/push, tests, ambiguity). `rush models efforts [model]` lists/validates effort levels; `rush models bump <smart|fast|worker|reviewer> <up|down>` steps role effort (README.md `rush models` for details).
 
 ## When the lock is stuck
-
-Don't `rm` the lock manually — on Windows the OS still holds the
-handle and refuses. Use:
-
-```
-rush sessions kill <id>            # kills holder PID + removes lock
-rush sessions kill <id> --wait 10s # extra time for a slow holder
-rush sessions reset <id> --force   # same + wipe message history (refuses while live work exists: cancel first)
-rush sessions reap                 # sweep ALL orphan locks at once
-```
-
-On Windows `kill` goes through `taskkill /F /T /PID` (whole tree:
-`rush.exe` → `claude.cmd` → `node.exe`) and polls until the PID
-exits, then retries lock removal until the OS releases the handle.
+Don't `rm` lock (Windows OS handle prevents it). Use `rush sessions kill <id>` (kills PID/removes lock), `rush sessions kill <id> --wait 10s`, `rush sessions reset <id> --force` (also wipes history; refuses live work, cancel first), or `rush sessions reap` (all orphan locks). Windows kill uses `taskkill /F /T /PID` for whole `rush.exe`→`claude.cmd`→`node.exe` tree, waits for PID exit and retries lock removal.
 
 ## After the run finishes — you are responsible for verifying everything
+Final text/JSON are claims, not receipts. Personally inspect all diff files/hunks/scope and claim-vs-diff; added/changed tests for real, non-vacuous regression value (confirm each would fail without the fix); rerun tests (prove flakiness); TODO/FIXME/placeholders, incomplete end-to-end wiring/mocks; and build/lint/typecheck. If wrong, redelegate same session with exact issue; don't hand-fix except true one-liner. Report only after seeing diff and test run; don't echo claims—say what actually changed, what you ran, compromises/redelegations.
+Envelope: `.rush/stdin/<task>.out` first; `.warnings[]` `final_text is empty` can mean a fan-out without composed top-level reply, a tool_call without final text, or no tools/actionable output; inspect the specific warning, then use `git status` and `rush sessions last <id>` as needed. `sessions watch <id>` ends only when no lock, driver, job, or delegation remains; `sessions why <id>` explains.
 
-The sub-agent's `final_text` and the JSON envelope are CLAIMS, not
-receipts. **Zero trust. You are obliged to verify the result yourself**
-before reporting back — the envelope is not evidence of what actually
-happened.
-
-Check, with your own eyes:
-
-- **The actual diff** vs the asked task — every changed file, every
-  hunk, scope and intent. Out-of-scope edits and claim-vs-diff
-  mismatches must be dealt with.
-- **Any tests added or modified** — do they really exercise the
-  bug/feature, or are they vacuous (assert-nothing, tautological
-  mocks, pass-against-the-bug)? A test that doesn't fail without the
-  fix has zero regression value.
-- **The tests, re-run by you** — don't accept "tests pass" from the
-  envelope. If flaky, prove it before dismissing.
-- **Unfinished work papered over** — TODO/FIXME/placeholders in the
-  diff, half-wired features that compile but don't connect
-  end-to-end, mocked-out branches.
-- **Build/lint/typecheck still clean** — one file's change can break a
-  caller the sub-agent didn't touch.
-
-If anything is off, **re-delegate** into the same `--session` with a
-tighter prompt naming exactly what was wrong. Don't paper over the gap
-yourself unless it's a true one-liner — fixing model output by hand
-teaches the loop nothing.
-
-Only report back **after** you have personally seen the diff and the
-test run. **Never echo the sub-agent's claim verbatim** — your
-authority is your verification, not the envelope. Report what was
-actually done, what *you* ran, and any compromises or re-delegations.
-
-### Where to find envelope details
-
-- `.rush/stdin/<task>.out` — wire envelope (`--json`) or final text.
-  Read first.
-- `.warnings[]` — `final_text is empty` means the model ended on a
-  `tool_call`; fall back to `git status` + `rush sessions last <id>`.
-- `rush sessions watch <id>` — confirm the process really exited: it ends
-  only once no lock, driver, job or delegation is live (`sessions why <id>`
-  gives the evidence).
-
-## Time limits, for the rare case you need one
-
-A launched run has no `--timeout` deadline by default (`--timeout`
-defaults to `0`) — it just runs until the agent finishes, up to a 6 h
-wall-clock cap (`RUSH_RUN_DEFAULT_HARD_TIMEOUT`) that ends it gracefully,
-like `--timeout`, with an envelope: for a wait you know is longer (an
-8-hour soak test), pass `--timeout <duration>` explicitly. The inactivity
-backstop is `--idle-timeout` (default `15m`): it ends the run
-if the agent goes fully quiet (no streamed output, no tool call/result)
-for that long, and unlike an ordinary provider stall it never silently
-retries — you'll see the run actually end. A tool call that's still
-running counts as activity, so a genuinely long build/test doesn't trip
-it. Pass `--idle-timeout <duration>` to change it, or `0` to disable it
-outright. It
-watches turns only: a run waiting between turns on a background job, a
-delegation or a retry pause is bounded by `--timeout` or the 6 h cap, not
-by it.
-
-Only reach for `--timeout <duration>` on top of that when the run must
-fit a hard external deadline (a CI job slot, a cron window) or must wait
-longer than the 6 h cap — it's an extra ceiling on the WHOLE run (or the
-way past the cap), not a replacement for the above.
+## Time limits
+`--timeout` defaults `0`; the `6 h` default cap is controlled by `RUSH_RUN_DEFAULT_HARD_TIMEOUT` (environment override applies to that default cap only). It attempts a graceful deadline and envelope; if the process remains alive 60 seconds later, the hard backstop force-kills it with exit 124, so graceful exit is not guaranteed. Set `--timeout <duration>` for longer waits or hard external deadlines; it caps the whole run. `--idle-timeout` (default `15m`) ends after no streamed output/tool call/result; unlike provider stall it doesn't silently retry. Running tool call counts as activity. Set duration or `0` to disable. It watches turns only; between-turn jobs/delegation/retry are bounded by explicit `--timeout` or the configured six-hour default cap.
 
 ## Task
 

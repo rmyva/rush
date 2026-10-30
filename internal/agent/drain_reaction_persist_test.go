@@ -13,6 +13,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
 )
@@ -69,6 +70,58 @@ func TestAskQuestion_InDrainTurnIsAReaction(t *testing.T) {
 	fp := last.FinishPart()
 	require.NotNil(t, fp)
 	require.True(t, strings.Contains(fp.Message, "asked a question"), "the finish still names the question: %q", fp.Message)
+}
+
+// TestRun_AskQuestionResumeRoleComesFromCallOptions exercises the real stop
+// path (model tool call -> AwaitingAnswerError -> handleStreamFailure -> saved
+// finish), proving per-call roles reach resume guidance and nil CallOptions is
+// handled safely rather than being read from a nonexistent SessionAgentCall field.
+func TestRun_AskQuestionResumeRoleComesFromCallOptions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		role config.SelectedModelType
+		want string
+	}{
+		{name: "fast call role", role: config.SelectedModelTypeFast, want: "rush run --role fast --session"},
+		{name: "reviewer call role", role: config.SelectedModelTypeReviewer, want: "rush run --role reviewer --session"},
+		{name: "nil call options", want: "role \"\" is unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			f := newAttemptFixture(t, "question-role-"+tc.name, attemptFixtureOpts{
+				noIdle:  true,
+				tools:   []fantasy.AgentTool{tools.NewAskQuestionTool()},
+				handler: askQuestionResponse,
+			})
+			call := SessionAgentCall{SessionID: f.sessID, Prompt: "ask", MaxOutputTokens: 100}
+			if tc.role != "" {
+				call.CallOptions = &CallOptions{ModelRole: tc.role}
+			}
+			_, err := f.sa.Run(ctx, call)
+			var awaiting *AwaitingAnswerError
+			require.ErrorAs(t, err, &awaiting)
+
+			msgs, err := f.env.messages.List(ctx, f.sessID)
+			require.NoError(t, err)
+			var finish *message.Finish
+			for i := range msgs {
+				if msgs[i].Role == message.Assistant && msgs[i].FinishPart() != nil {
+					finish = msgs[i].FinishPart()
+				}
+			}
+			require.NotNil(t, finish)
+			if tc.role != "" {
+				require.Contains(t, finish.Details, tc.want)
+				require.Contains(t, finish.Details, f.sessID)
+				require.NotContains(t, finish.Details, `role "" is unknown`)
+			} else {
+				require.Contains(t, finish.Details, tc.want)
+				require.NotContains(t, finish.Details, "rush run ")
+			}
+		})
+	}
 }
 
 // askQuestionResponse serves one step whose only content is an ask_question

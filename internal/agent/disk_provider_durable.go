@@ -35,6 +35,11 @@ var ErrDiskProviderNotDurable = errors.New(
 var ErrDiskProviderUnavailable = errors.New(
 	"agent: the process-bound disk provider for this work is no longer available")
 
+// ErrCredentialBindingUnavailable is returned when credentials originating
+// from a tenant call cannot be retained for automatic continuation.
+var ErrCredentialBindingUnavailable = errors.New(
+	"agent: credentials originating from this tenant are unavailable for automatic continuation")
+
 // ErrCredentialSetNotDurable is returned when a process-local tenant
 // credential bundle reaches a durable handoff path.
 var ErrCredentialSetNotDurable = errors.New(

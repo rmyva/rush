@@ -3,6 +3,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+import sys
 from unittest.mock import patch
 
 FILE=pathlib.Path(__file__).with_name("ci_gate_decide.py")
@@ -16,15 +17,73 @@ class DecideTests(unittest.TestCase):
     def args(self,**kw):
         d=dict(event_name="pull_request",base_ref="feature",labels=[],mode="tier1",needed_job_results=dict(GOOD),validated_sha=SHA,current_sha=SHA,validated_base_sha=SHA,current_base_sha=SHA,expected_jobs=list(GOOD)); d.update(kw); return d
     def test_transition_table(self):
-        cases=[("task tier1",{},"pass"),("main labeled full",dict(base_ref="main",labels=["full-ci"],mode="full"),"pass"),("main unlabeled",dict(base_ref="main"),"fail"),("main labeled tier1",dict(base_ref="main",labels=["full-ci"]),"fail"),("push main full",dict(event_name="push",base_ref="main",mode="full"),"pass"),("push main tier1",dict(event_name="push",base_ref="main"),"fail"),("stale head",dict(current_sha="b"*40),"fail"),("stale base",dict(current_base_sha="b"*40),"fail"),("empty expected",dict(expected_jobs=[]),"fail"),("bad mode",dict(mode="invalid"),"fail"),("needed job skipped",dict(needed_job_results={"plan":"success","checks":"skipped"}),"fail"),("draft labeled full",dict(base_ref="main",labels=["full-ci"],mode="full",draft=True),"pass"),("draft without label",dict(base_ref="main",draft=True),"fail"),("unrelated label event",dict(base_ref="main",event_action="labeled",event_label="bug",expected_jobs=[]),"pass")]
+        cases=[("task tier1",{},"pass"),("main unlabeled tier1",dict(base_ref="main"),"pass"),("main labeled full",dict(base_ref="main",labels=["full-ci"],mode="full"),"pass"),("main labeled tier1",dict(base_ref="main",labels=["full-ci"]),"fail"),("push main full",dict(event_name="push",base_ref="main",mode="full"),"pass"),("push main tier1",dict(event_name="push",base_ref="main"),"fail"),("stale head",dict(current_sha="b"*40),"fail"),("stale base",dict(current_base_sha="b"*40),"fail"),("empty expected",dict(expected_jobs=[]),"fail"),("bad mode",dict(mode="invalid"),"fail"),("needed job skipped",dict(needed_job_results={"plan":"success","checks":"skipped"}),"fail"),("draft labeled full",dict(base_ref="main",labels=["full-ci"],mode="full",draft=True),"pass"),("draft without label",dict(base_ref="main",draft=True),"pass"),("unrelated label event",dict(base_ref="main",event_action="labeled",event_label="bug",expected_jobs=[]),"pass")]
         for name,changes,want in cases:
             with self.subTest(name=name): self.assertEqual(gate.decide(**self.args(**changes))["verdict"],want)
     def test_exact_red_reason_and_stale_revision(self):
-        self.assertEqual(gate.decide(**self.args(base_ref="main"))["reason"],gate.NO_FULL)
+        self.assertEqual(gate.decide(**self.args(base_ref="main",labels=["full-ci"]))["reason"],gate.NO_FULL)
+        self.assertEqual(gate.decide(**self.args(base_ref="main"))["reason"],"Tier 1 validation passed.")
+        self.assertEqual(gate.decide(**self.args(base_ref="main",mode="full"))["reason"],"Full validation passed.")
         self.assertIn("stale revision",gate.decide(**self.args(current_sha="b"*40))["reason"])
     def test_unrelated_label_ignored_even_with_invalid_plan(self):
         r=gate.decide("pull_request","main",[],"bad",{},None,None,expected_jobs=[],plan_valid=False,event_action="unlabeled",event_label="bug")
         self.assertEqual(r["verdict"],"pass"); self.assertIn("Ignored unrelated",r["reason"])
+
+class DirectiveTests(unittest.TestCase):
+    def test_commit_message_directives(self):
+        positives = [
+            "CI: full",
+            "ci: FULL",
+            "  CI:full  ",
+            "heading\nCI: full",
+            "subject\n\nbody\nCI: full",
+            "CI: full\r",
+            "first commit\nsecond commit\nCI: full",
+        ]
+        negatives = [
+            "",
+            "CI: full-suite",
+            "Please run CI: full",
+            "fullest",
+            "CI: fullest",
+            "# CI: full",
+            "\n",
+            "CI: fullx",
+            "normal commit",
+            "second\vCI: full",
+            "CI: full\v",
+        ]
+        for message in positives:
+            with self.subTest(message=message):
+                self.assertTrue(gate.commit_requests_full(message))
+        for message in negatives:
+            with self.subTest(message=message):
+                self.assertFalse(gate.commit_requests_full(message))
+
+    def test_full_directive_cli_queries_git_and_writes_output(self):
+        with tempfile.TemporaryDirectory() as td:
+            output=pathlib.Path(td)/"github-output"
+            args=type("A",(),{"base":"base-sha","head":"head-sha"})()
+            for text, expected in (("subject\n\nCI: full\nother commit", "true"), ("subject\n\nordinary\vCI: full", "false")):
+                result=type("R",(),{"stdout":text})()
+                with self.subTest(expected=expected), patch.object(gate.subprocess,"run",return_value=result) as run, patch.dict("os.environ",{"GITHUB_OUTPUT":str(output)},clear=True), patch("builtins.print") as printed:
+                    output.write_text("")
+                    gate.full_directive_cli(args)
+                    run.assert_called_once_with(["git","log","--format=%B","base-sha..head-sha"],check=True,capture_output=True,text=True)
+                    printed.assert_called_once_with(expected)
+                    self.assertEqual(output.read_text(),f"full_directive={expected}\n")
+    def test_full_directive_cli_subcommand_dispatch_false_and_true(self):
+        with tempfile.TemporaryDirectory() as td:
+            output=pathlib.Path(td)/"github-output"
+            for text, expected in (("ordinary", "false"), ("subject\nCI: full", "true")):
+                result=type("R",(),{"stdout":text})()
+                with self.subTest(expected=expected), patch.object(gate.subprocess,"run",return_value=result) as run, patch.dict("os.environ",{"GITHUB_OUTPUT":str(output)},clear=True), patch.object(sys,"argv",[str(FILE),"full-directive","--base","base-sha","--head","head-sha"]), patch("builtins.print") as printed:
+                    output.write_text("")
+                    self.assertEqual(gate.main(),0)
+                    run.assert_called_once_with(["git","log","--format=%B","base-sha..head-sha"],check=True,capture_output=True,text=True)
+                    printed.assert_called_once_with(expected)
+                    self.assertEqual(output.read_text(),f"full_directive={expected}\n")
+
 
 class JobPlanTests(unittest.TestCase):
     def test_exact_full_leaf_inventory(self):
@@ -37,8 +96,17 @@ class JobPlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             pp=pathlib.Path(td)/"p.json"; out=pathlib.Path(td)/"out.json"; pp.write_text(json.dumps(plan)); args=type("A",(),{"plan":str(pp),"graph_dir":td,"force_full":False,"policy":str(pathlib.Path(td)/"policy"),"base":SHA,"head":SHA,"output":str(out)})()
             with patch.object(gate.subprocess,"run",return_value=type("R",(),{"stdout":""})()),patch.dict("os.environ",{},clear=True): gate.prepare_cli(args)
-            result=json.loads(out.read_text())["expected_outputs"]
-            self.assertEqual(result["mode"],"tier1"); self.assertTrue(result["macos_needed"]); self.assertTrue(result["windows_needed"])
+            result=json.loads(out.read_text())
+            self.assertEqual(result["expected_outputs"]["mode"],"tier1"); self.assertTrue(result["expected_outputs"]["macos_needed"]); self.assertTrue(result["expected_outputs"]["windows_needed"])
+
+    def test_prepare_cli_never_disables_heavy_work(self):
+        plan={"schema_version":1,"mode":"tier1","per_os":{"linux":[],"darwin":[],"windows":[]},"race_packages":[],"not_run":[],"native_required":{"required":False},"heavy_allowed":False,"cheap_only":True,"head":SHA,"base":SHA}
+        with tempfile.TemporaryDirectory() as td:
+            pp=pathlib.Path(td)/"p.json"; out=pathlib.Path(td)/"out.json"; pp.write_text(json.dumps(plan)); args=type("A",(),{"plan":str(pp),"graph_dir":td,"force_full":False,"policy":str(pathlib.Path(td)/"policy"),"base":SHA,"head":SHA,"output":str(out)})()
+            with patch.object(gate.subprocess,"run",return_value=type("R",(),{"stdout":""})()),patch.dict("os.environ",{},clear=True): gate.prepare_cli(args)
+            result=json.loads(out.read_text())
+            self.assertTrue(result["expected_outputs"]["heavy_allowed"])
+
     def assignment(self,packages=None):
         packages=FULL_PACKAGES if packages is None else packages
         shards={x:{"groups":[]} for x in "ABCD"}; shards["A"]["groups"]=[{"name":"a","packages":packages[1:]}]
@@ -84,33 +152,29 @@ class AdapterTests(unittest.TestCase):
             with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",return_value=self.pr()) as api:
                 result=gate.gate_cli(args)
             self.assertEqual(api.call_count,1); self.assertIn("dependency did not succeed",result["reason"])
-    def test_live_label_removed_minimal_plan_summary_lists_skips_and_needs(self):
+    def test_live_label_removed_selector_plan_still_requires_heavy_receipts(self):
         with tempfile.TemporaryDirectory() as td:
-            _,_,args,env=self.setup_contract(td,"main"); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"; env["NEEDS_JSON"]=json.dumps({"plan":"skipped","checks":"success","tests":"skipped","web":"skipped","security":"skipped"}); summary=pathlib.Path(td)/"summary.md"; env["GITHUB_STEP_SUMMARY"]=str(summary)
-            from unittest.mock import patch
-            with patch.dict("os.environ",env,clear=True):
-                gate.minimal_cli(type("A",(),{"base":SHA,"head":SHA,"output":args.plan})())
-            with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",return_value=self.pr(labels=(),ref="main")):
-                result=gate.gate_cli(args)
-            text=summary.read_text()
-            self.assertEqual(result["reason"],gate.NO_FULL); self.assertEqual(result["jobs"]["plan"],"skipped"); self.assertEqual(result["jobs"]["checks"],"success")
-            self.assertIn("heavy suites",text); self.assertIn("tests / test-ubuntu",text); self.assertIn("security / codeql-go",text); self.assertIn("web",text)
-    def test_live_label_removed_with_plan_missing_returns_no_full(self):
+            plan,outputs,args,env=self.setup_contract(td,"main"); plan["not_run"]=[{"os":"all","package_or_suite":"selected heavy work","reason":"not selected"}]; pathlib.Path(args.plan).write_text(json.dumps(plan)); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"; env["NEEDS_JSON"]=json.dumps({"plan":"success","checks":"success","tests":"success","web":"skipped","security":"skipped"}); summary=pathlib.Path(td)/"summary.md"; env["GITHUB_STEP_SUMMARY"]=str(summary)
+            with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",side_effect=[self.pr(labels=(),ref="main"),self.jobs_api()]): result=gate.gate_cli(args)
+            self.assertEqual(result["verdict"],"pass",result["reason"]); self.assertEqual(result["reason"],"Tier 1 validation passed.")
+            summary_text=summary.read_text()
+            self.assertIn("## ci-gate: PASS",summary_text); self.assertIn("Tier 1 validation passed.",summary_text); self.assertIn("| Job | Result |",summary_text); self.assertIn("| plan | success |",summary_text); self.assertIn("| all/selected heavy work | not selected |",summary_text)
+    def test_live_label_removed_with_missing_plan_fails(self):
         with tempfile.TemporaryDirectory() as td:
             _,_,args,env=self.setup_contract(td,"main"); args.plan=str(pathlib.Path(td)/"absent.json"); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"
             with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",return_value=self.pr(labels=(),ref="main")) as api:
                 result=gate.gate_cli(args)
-            self.assertEqual(result["reason"],gate.NO_FULL); self.assertEqual(api.call_count,1)
+            self.assertEqual(result["verdict"],"fail"); self.assertIn("No such file",result["reason"]); self.assertEqual(api.call_count,1)
     def test_live_readded_label_with_tier1_mode_returns_no_full(self):
         with tempfile.TemporaryDirectory() as td:
             _,_,args,env=self.setup_contract(td,"main"); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"
-            with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",side_effect=[self.pr(labels=["full-ci"],head="b"*40,ref="main"),self.jobs_api()]):
+            with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",side_effect=[self.pr(labels=["full-ci"],ref="main"),self.jobs_api()]):
                 result=gate.gate_cli(args)
             self.assertEqual(result["reason"],gate.NO_FULL); self.assertEqual(result["verdict"],"fail")
     def test_stale_sha_fails_after_live_state_query(self):
         with tempfile.TemporaryDirectory() as td:
-            _,_,args,env=self.setup_contract(td); env["VALIDATED_HEAD"]=SHA
-            with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",side_effect=[self.pr(head="b"*40),self.jobs_api()]): result=gate.gate_cli(args)
+            _,_,args,env=self.setup_contract(td,"main"); env["PR_BASE_REF"]="main"; env["GITHUB_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"
+            with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",side_effect=[self.pr(head="b"*40,labels=(),ref="main"),self.jobs_api()]): result=gate.gate_cli(args)
             self.assertEqual(result["verdict"],"fail"); self.assertIn("stale revision",result["reason"])
     def test_unrelated_unlabeled_event_uses_no_api(self):
         with tempfile.TemporaryDirectory() as td:
@@ -119,16 +183,34 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(result["verdict"],"pass"); self.assertEqual(api.call_count,0)
     def test_missing_full_windows_assignment_fails_after_mocked_api(self):
         with tempfile.TemporaryDirectory() as td:
-            plan,outputs,args,env=self.setup_contract(td); outputs.update(mode="full",ubuntu_needed=True,macos_needed=True,windows_needed=True,agent_selected=True,race_needed=True,web_changed=True,security_full=True,security_actions=True,security_deps=True,linux_packages=" ".join(FULL_PACKAGES),darwin_packages=" ".join(FULL_PACKAGES),windows_packages=" ".join(FULL_PACKAGES),race_packages=MODULE+"/internal/hooks",native_required=True); plan.update(mode="full",per_os={o:[{"package":p} for p in FULL_PACKAGES] for o in ("linux","darwin","windows")},race_packages=[MODULE+"/internal/hooks"]); plan["expected_outputs"]=outputs; pathlib.Path(args.plan).write_text(json.dumps(plan)); env["PLAN_OUTPUTS_JSON"]=json.dumps(outputs); env["NEEDS_JSON"]=json.dumps({"plan":"success","checks":"success","tests":"success","web":"success","security":"success"}); env["VALIDATED_HEAD"]=SHA; env["VALIDATED_BASE"]=SHA
+            plan,outputs,args,env=self.setup_contract(td,"main"); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"; outputs.update(mode="full",ubuntu_needed=True,macos_needed=True,windows_needed=True,agent_selected=True,race_needed=True,web_changed=True,security_full=True,security_actions=True,security_deps=True,linux_packages=" ".join(FULL_PACKAGES),darwin_packages=" ".join(FULL_PACKAGES),windows_packages=" ".join(FULL_PACKAGES),race_packages=MODULE+"/internal/hooks",native_required=True); plan.update(mode="full",per_os={o:[{"package":p} for p in FULL_PACKAGES] for o in ("linux","darwin","windows")},race_packages=[MODULE+"/internal/hooks"]); plan["expected_outputs"]=outputs; pathlib.Path(args.plan).write_text(json.dumps(plan)); env["PLAN_OUTPUTS_JSON"]=json.dumps(outputs); env["NEEDS_JSON"]=json.dumps({"plan":"success","checks":"success","tests":"success","web":"success","security":"success"}); env["VALIDATED_HEAD"]=SHA; env["VALIDATED_BASE"]=SHA
             with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",side_effect=[self.pr(),self.jobs_api()]):
                 result=gate.gate_cli(args)
             self.assertEqual(result["verdict"],"fail"); self.assertIn("missing assignment",result["reason"])
-    def test_full_assignment_pass_end_to_end(self):
+    def test_unlabeled_main_full_assignment_pass_end_to_end(self):
         with tempfile.TemporaryDirectory() as td:
-            plan,outputs,args,env=self.setup_contract(td); outputs.update(mode="full",ubuntu_needed=True,macos_needed=True,windows_needed=True,agent_selected=True,race_needed=True,web_changed=True,security_full=True,security_actions=True,security_deps=True,linux_packages=" ".join(FULL_PACKAGES),darwin_packages=" ".join(FULL_PACKAGES),windows_packages=" ".join(FULL_PACKAGES),race_packages=MODULE+"/internal/hooks",native_required=True); plan.update(mode="full",per_os={o:[{"package":p} for p in FULL_PACKAGES] for o in ("linux","darwin","windows")},race_packages=[MODULE+"/internal/hooks"]); plan["expected_outputs"]=outputs
+            plan,outputs,args,env=self.setup_contract(td,"main"); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"; outputs.update(mode="full",ubuntu_needed=True,macos_needed=True,windows_needed=True,agent_selected=True,race_needed=True,web_changed=True,security_full=True,security_actions=True,security_deps=True,linux_packages=" ".join(FULL_PACKAGES),darwin_packages=" ".join(FULL_PACKAGES),windows_packages=" ".join(FULL_PACKAGES),race_packages=MODULE+"/internal/hooks",native_required=True); plan.update(mode="full",per_os={o:[{"package":p} for p in FULL_PACKAGES] for o in ("linux","darwin","windows")},race_packages=[MODULE+"/internal/hooks"]); plan["expected_outputs"]=outputs
             needed,_=gate.expected_jobs(plan,outputs); api_jobs=[{"name":n,"conclusion":"success","run_attempt":2} for n in needed]; assignment=pathlib.Path(td)/"assignment.json"; assignment.write_text(json.dumps(self.assignment())); args.assignment=str(assignment); pathlib.Path(args.plan).write_text(json.dumps(plan)); env["PLAN_OUTPUTS_JSON"]=json.dumps(outputs); env["NEEDS_JSON"]=json.dumps({"plan":"success","checks":"success","tests":"success","web":"success","security":"success"})
-            with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",side_effect=[self.pr(labels=["full-ci"],ref="main"),[{"jobs":api_jobs}]]): result=gate.gate_cli(args)
-            self.assertEqual(result["verdict"],"pass",result["reason"])
+            with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",side_effect=[self.pr(labels=(),ref="main"),[{"jobs":api_jobs}]]): result=gate.gate_cli(args)
+            self.assertEqual(result["verdict"],"pass",result["reason"]); self.assertEqual(result["reason"],"Full validation passed.")
+    def test_unlabeled_main_full_receipt_missing_or_failed_fails(self):
+        for failure in ("missing", "failed"):
+            with self.subTest(failure=failure),tempfile.TemporaryDirectory() as td:
+                plan,outputs,args,env=self.setup_contract(td,"main"); env["GITHUB_BASE_REF"]="main"; env["PR_BASE_REF"]="main"; env["GITHUB_EVENT_ACTION"]="unlabeled"; env["GITHUB_EVENT_LABEL"]="full-ci"; outputs.update(mode="full",ubuntu_needed=True,macos_needed=True,windows_needed=True,agent_selected=True,race_needed=True,web_changed=True,security_full=True,security_actions=True,security_deps=True,linux_packages=" ".join(FULL_PACKAGES),darwin_packages=" ".join(FULL_PACKAGES),windows_packages=" ".join(FULL_PACKAGES),race_packages=MODULE+"/internal/hooks",native_required=True); plan.update(mode="full",per_os={o:[{"package":p} for p in FULL_PACKAGES] for o in ("linux","darwin","windows")},race_packages=[MODULE+"/internal/hooks"]); plan["expected_outputs"]=outputs
+                needed,_=gate.expected_jobs(plan,outputs); api_jobs=[{"name":n,"conclusion":"success","run_attempt":2} for n in needed]
+                if failure == "missing":
+                    missing_job=needed[-1]
+                    api_jobs.pop()
+                else:
+                    failed_job=needed[-1]
+                    api_jobs[-1]["conclusion"]="failure"
+                assignment=pathlib.Path(td)/"assignment.json"; assignment.write_text(json.dumps(self.assignment())); args.assignment=str(assignment); pathlib.Path(args.plan).write_text(json.dumps(plan)); env["PLAN_OUTPUTS_JSON"]=json.dumps(outputs); env["NEEDS_JSON"]=json.dumps({"plan":"success","checks":"success","tests":"success","web":"success","security":"success"})
+                with patch.dict("os.environ",env,clear=True),patch.object(gate,"run_json",side_effect=[self.pr(labels=(),ref="main"),[{"jobs":api_jobs}]]): result=gate.gate_cli(args)
+                self.assertEqual(result["verdict"],"fail")
+                self.assertNotEqual(result["reason"],gate.NO_FULL)
+                if failure == "missing": self.assertEqual(result["reason"],f"missing jobs: {missing_job}")
+                else: self.assertEqual(result["reason"],f"required jobs not successful: {failed_job} (failure)")
+
     def test_output_drift_and_missing_plan_fail(self):
         with tempfile.TemporaryDirectory() as td:
             _,outputs,args,env=self.setup_contract(td); outputs["web_changed"]=True; env["PLAN_OUTPUTS_JSON"]=json.dumps(outputs)

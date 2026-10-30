@@ -220,6 +220,7 @@ func runCredentialSnapshotProbe(
 	arrived := make(chan struct{})
 	release := make(chan struct{})
 	workerSeen := make(chan credentialSnapshotProbe, 1)
+	workerResponded := make(chan struct{}, 1)
 	var mu sync.Mutex
 	topLevelTurns := 0
 
@@ -274,6 +275,7 @@ func runCredentialSnapshotProbe(
 			return
 		}
 		sseChunks(t, w, []map[string]any{textChunk("probe", "worker done"), finishChunk("probe", "stop")})
+		workerResponded <- struct{}{}
 	}))
 	t.Cleanup(srv.Close)
 	h.tenant = &credentialServer{srv: srv, auth: map[string]int{}}
@@ -325,7 +327,15 @@ func runCredentialSnapshotProbe(
 	// while the delegated worker is still in flight, so wait for its request.
 	select {
 	case probe := <-workerSeen:
+		select {
+		case <-workerResponded:
+		case <-ctx.Done():
+			t.Fatal("the delegated worker did not finish its provider response")
+		}
 		probe.operatorRequests = h.operator.totalRequests()
+		require.Never(t, func() bool {
+			return h.operator.totalRequests() != 0
+		}, 3*time.Second, 20*time.Millisecond, "credential snapshot probe must settle without a later operator-provider fallback")
 		return probe
 	case <-ctx.Done():
 		t.Fatal("the delegated worker made no provider request")

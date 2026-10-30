@@ -21,22 +21,19 @@ const (
 )
 
 // AwaitingAnswerGuidance returns the orchestrator-facing instruction
-// paragraph for a question-tool stop — the turn is force-finished because
-// the agent asked a question and this fork's `rush run` has no synchronous
-// way to block mid-turn for an answer (both headless and web sessions
-// auto-approve permissions unconditionally; there is no blocking
-// permission-style channel to wait on). The turn must end cleanly instead,
-// with enough information for an orchestrating agent (or a human operator)
-// to answer and resume.
-//
-// This is the single source of truth for the guidance text, mirroring
-// PeakHoursGuidance in peak_hours_stop.go: the question-tool's finish-part
-// writer and any stderr/CLI surface should call this instead of composing
-// their own prose, so the wording stays identical everywhere it appears.
-func AwaitingAnswerGuidance(question string, options []string, sessionID string) string {
+// paragraph for a question-tool stop. Unknown roles intentionally omit the
+// resume command rather than print a command rejected by `rush run`.
+func AwaitingAnswerGuidance(question string, options []string, sessionID string, role string) string {
 	optsLine := ""
 	if len(options) > 0 {
 		optsLine = "\n\nSuggested options: " + strings.Join(options, " | ")
+	}
+	resume := ""
+	switch role {
+	case "smart", "fast", "worker", "reviewer":
+		resume = fmt.Sprintf("resume with:\n\n  rush run --role %s --session %s \"<your answer>\"", role, sessionID)
+	default:
+		resume = fmt.Sprintf("do not resume with a command: this run's model role %q is unknown and may not be accepted by `rush run`. Choose a supported role (smart, fast, worker, or reviewer) before resuming session %s.", role, sessionID)
 	}
 	return fmt.Sprintf(
 		awaitingQuestionPrefix+"%s%s"+awaitingGuidanceMarker+" — rush is intentionally stopping this turn because "+
@@ -44,11 +41,10 @@ func AwaitingAnswerGuidance(question string, options []string, sessionID string)
 			"rush is exiting now; it will not retry or re-ask on its own.\n\n"+
 			"If an orchestrating agent is driving this session: decide the answer "+
 			"yourself (or ask the human operator if it's genuinely their call), then "+
-			"resume with:\n\n"+
-			"  rush run --session %s \"<your answer>\"\n\n"+
+			"%s\n\n"+
 			"This is a normal continuation, not a retry — do not treat exit_reason "+
 			"\"awaiting_answer\" as a failure.",
-		question, optsLine, sessionID,
+		question, optsLine, resume,
 	)
 }
 
@@ -134,7 +130,7 @@ func subAgentQuestionBlockFromFinish(fp *message.Finish) (string, bool) {
 // peak_hours_stop.go: msg is a short, unambiguous headline (never empty —
 // an empty message looks identical to a voluntary finish), details carries
 // the underlying error verbatim plus the full orchestrator guidance.
-func awaitingAnswerStoppedFinishText(err error) (msg, details string) {
+func awaitingAnswerStoppedFinishText(err error, role string) (msg, details string) {
 	msg = awaitingAnswerStoppedTitle
 	var ae *AwaitingAnswerError
 	question := ""
@@ -145,6 +141,6 @@ func awaitingAnswerStoppedFinishText(err error) (msg, details string) {
 		options = ae.Options
 		sessionID = ae.SessionID
 	}
-	details = fmt.Sprintf("%s\n\n%s", err.Error(), AwaitingAnswerGuidance(question, options, sessionID))
+	details = fmt.Sprintf("%s\n\n%s", err.Error(), AwaitingAnswerGuidance(question, options, sessionID, role))
 	return msg, details
 }

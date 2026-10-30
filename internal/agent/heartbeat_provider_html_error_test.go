@@ -147,7 +147,7 @@ type codexHTTPTestTransport struct{ server *httptest.Server }
 
 func (rt codexHTTPTestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	forwarded := req.Clone(req.Context())
-	serverURL, err := http.NewRequest(http.MethodGet, rt.server.URL, nil)
+	serverURL, err := http.NewRequestWithContext(req.Context(), http.MethodGet, rt.server.URL, nil)
 	if err != nil {
 		return nil, err
 	}

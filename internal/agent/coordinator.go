@@ -333,6 +333,12 @@ type coordinator struct {
 	// the legacy process-current-owner resolution via the package functions.
 	mcpOwner *mcp.Owner
 
+	// credentialedRoots is sticky process-local knowledge: fail closed for any root
+	// that has ever carried tenant credentials; a later Drain must not resolve
+	// against process configuration.
+	credentialedRootsMu sync.Mutex
+	credentialedRoots   map[string]struct{}
+
 	currentAgent SessionAgent
 	agents       map[string]SessionAgent
 

@@ -57,7 +57,7 @@ func broadcastUpdateNoticeWithClientVersion(ctx context.Context, h *Hub, client 
 	// A development build has nothing to compare against. Available() treats
 	// any pre-release Current against a stable Latest as "an update exists",
 	// so without this a locally built binary — "devel-<commit>", or the
-	// current 0.2.0-alpha.16 — would raise the badge on EVERY start, forever.
+	// current 0.2.0-alpha.19 — would raise the badge on EVERY start, forever.
 	// IsDevelopment already knows every shape internal/version emits.
 	if info.IsDevelopment() {
 		slog.Debug("skipping update notice: development build", "version", info.Current)

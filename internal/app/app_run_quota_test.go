@@ -177,7 +177,7 @@ func TestCLIQuotaPreservesPendingChildQuestion(t *testing.T) {
 	e3ReserveDelegationWithToken(t, h.app, h.sessionID, "held-child", child.ID)
 	e3PublishHeldQuestion(t, ctx, h.app, h.sessionID, "held-child", child.ID, "which port?")
 	_, err = h.app.Messages.Create(ctx, child.ID, message.CreateMessageParams{Role: message.Assistant, Parts: []message.ContentPart{
-		message.Finish{Reason: message.FinishReasonError, Message: "Stopped: agent asked a question and is awaiting an answer", Details: agent.AwaitingAnswerGuidance("which port?", []string{"8080"}, child.ID)},
+		message.Finish{Reason: message.FinishReasonError, Message: "Stopped: agent asked a question and is awaiting an answer", Details: agent.AwaitingAnswerGuidance("which port?", []string{"8080"}, child.ID, "smart")},
 	}})
 	require.NoError(t, err)
 	res, wire, runErr := h.run(ctx, RunOverrides{})
@@ -205,7 +205,7 @@ func TestCLIQuotaFinishMetadataAloneDoesNotClearLiveWork(t *testing.T) {
 	require.NoError(t, err)
 	claimDelegation(t, ctx, h.app, h.sessionID, "held-child-twin", child.ID)
 	_, err = h.app.Messages.Create(ctx, child.ID, message.CreateMessageParams{Role: message.Assistant, Parts: []message.ContentPart{
-		message.Finish{Reason: message.FinishReasonError, Message: "Stopped: agent asked a question and is awaiting an answer", Details: agent.AwaitingAnswerGuidance("which port?", []string{"8080"}, child.ID)},
+		message.Finish{Reason: message.FinishReasonError, Message: "Stopped: agent asked a question and is awaiting an answer", Details: agent.AwaitingAnswerGuidance("which port?", []string{"8080"}, child.ID, "smart")},
 	}})
 	require.NoError(t, err)
 	runCtx, cancel := context.WithTimeout(t.Context(), quotaRetryWait()+6*time.Second)

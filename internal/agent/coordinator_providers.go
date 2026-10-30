@@ -248,7 +248,7 @@ func getProviderOptions(sessionID string, model Model, providerCfg config.Provid
 		if err == nil {
 			options[vercel.Name] = parsed
 		}
-	case google.Name:
+	case google.Name, catwalk.TypeVertexAI:
 		_, hasReasoning := mergedOptions["thinking_config"]
 		if !hasReasoning {
 			if strings.HasPrefix(model.CatwalkCfg.ID, "gemini-2") {

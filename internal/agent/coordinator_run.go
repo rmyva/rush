@@ -243,8 +243,13 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 	// loop's own turns (per-call options) and Drains leave it to the loop.
 	if callOpts == nil && !isDrainCallFrom(ctx) {
 		sessions := c.sessions
+		previous := admissionSetupFrom(ctx)
 		ctx = WithAdmissionSetup(ctx, func(ctx context.Context) error {
 			clearCancelRequest(ctx, sessions, sessionID)
+			// Preserve any setup installed by the caller.
+			if previous != nil {
+				return previous(ctx)
+			}
 			return nil
 		})
 	}

@@ -37,7 +37,7 @@ func TestQuestionStopFormatRecoverDeadHost(t *testing.T) {
 	const question = "Should I ship or hold?"
 	title, details := awaitingAnswerStoppedFinishText(&AwaitingAnswerError{
 		Question: question, Options: []string{"ship", "hold"}, SessionID: child.ID,
-	})
+	}, "smart")
 	require.Equal(t, "Stopped: agent asked a question and is awaiting an answer", title)
 	require.Contains(t, details, "QUESTION: "+question)
 	require.Contains(t, details, "\n\nThis is not a crash")

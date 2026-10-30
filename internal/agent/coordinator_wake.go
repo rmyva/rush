@@ -86,9 +86,9 @@ func (c *coordinator) wakeSession(ctx context.Context, sessionID string, fact bo
 // settled); a newly admitted explicit epoch re-evaluates on its own. Any
 // other refusal keeps the historical paced retry (noteDrainRefused).
 func (c *coordinator) handleDrainBuildError(sessionID string, buildErr error) error {
-	if errors.Is(buildErr, ErrDiskProviderUnavailable) {
+	if errors.Is(buildErr, ErrDiskProviderUnavailable) || errors.Is(buildErr, ErrCredentialBindingUnavailable) {
 		c.clearFromRecheckSet(sessionID)
-		slog.Warn("drain launch refused: the session's disk provider binding is unavailable; deferred until an explicit re-supply",
+		slog.Warn("drain launch refused: a process-bound drain dependency is unavailable; deferred until explicit re-supply",
 			"session_id", sessionID, "err", buildErr)
 		return fmt.Errorf("wakeSession: build drain call: %w", buildErr)
 	}

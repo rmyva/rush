@@ -311,7 +311,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 		// awaitingErr branch already wrote onto the Finish part via
 		// awaitingAnswerStoppedFinishText — title is the short headline,
 		// details is err.Error() plus the full AwaitingAnswerGuidance
-		// (question, options, and the ready-to-run `rush run --session
+		// (question, options, and the ready-to-run `rush run --role <role> --session
 		// <id> "<answer>"` resume command). Reuse it verbatim instead of
 		// falling through to the bare err.Error() the next case would use,
 		// so the orchestrator sees the resume command without having to

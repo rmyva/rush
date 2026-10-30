@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"charm.land/fantasy/providers/anthropic"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
@@ -68,6 +69,42 @@ func codexCutError() *fantasy.ProviderError {
 	}
 }
 
+// TestStreamPersistsMultipleReasoningBlocksInArrivalOrder pins persistence order.
+func TestStreamPersistsMultipleReasoningBlocksInArrivalOrder(t *testing.T) {
+	f := newRetryFixture(t, "reasoning-block-order")
+	stepMsg := f.beginStep(t)
+	require.NoError(t, f.ts.onReasoningStart("r1", fantasy.ReasoningContent{Text: "first thought"}))
+	require.NoError(t, f.ts.onReasoningDelta("r1", " continues"))
+	require.NoError(t, f.ts.onReasoningEnd("r1", fantasy.ReasoningContent{ProviderMetadata: fantasy.ProviderMetadata{
+		anthropic.Name: &anthropic.ReasoningOptionMetadata{Signature: "first-signature"},
+	}}))
+	require.NoError(t, f.ts.onTextDelta("t1", "visible"))
+	require.NoError(t, f.ts.onReasoningStart("r2", fantasy.ReasoningContent{Text: "second thought"}))
+	require.NoError(t, f.ts.onReasoningDelta("r2", " continues"))
+	require.NoError(t, f.ts.onReasoningEnd("r2", fantasy.ReasoningContent{ProviderMetadata: fantasy.ProviderMetadata{
+		anthropic.Name: &anthropic.ReasoningOptionMetadata{Signature: "second-signature"},
+	}}))
+
+	persisted, err := f.svc.Get(context.Background(), stepMsg.ID)
+	require.NoError(t, err)
+	var sequence []string
+	for _, part := range persisted.Parts {
+		switch value := part.(type) {
+		case message.ReasoningContent:
+			sequence = append(sequence, "reasoning:"+value.Thinking)
+		case message.TextContent:
+			sequence = append(sequence, "text:"+value.Text)
+		}
+	}
+	require.Equal(t, []string{"reasoning:first thought continues", "text:visible", "reasoning:second thought continues"}, sequence)
+	reasoning := persisted.ReasoningContents()
+	require.Len(t, reasoning, 2)
+	require.Equal(t, "first thought continues", reasoning[0].Thinking)
+	require.Equal(t, "first-signature", reasoning[0].Signature)
+	require.Equal(t, "second thought continues", reasoning[1].Thinking)
+	require.Equal(t, "second-signature", reasoning[1].Signature)
+}
+
 // TestStreamRetryDiscardsCutAttemptContent pins the retry duplication fix.
 // Revert check (red): with the truncation calls removed this fails — the
 // assistant text reads "partial the full answer" (the cut attempt's prefix
@@ -79,6 +116,8 @@ func TestStreamRetryDiscardsCutAttemptContent(t *testing.T) {
 	require.NoError(t, f.ts.onReasoningStart("r1", fantasy.ReasoningContent{Text: "cut-attempt thinking"}))
 	require.NoError(t, f.ts.onReasoningDelta("r1", "more thinking"))
 	require.NoError(t, f.ts.onTextDelta("t1", "partial "))
+	require.NoError(t, f.ts.onReasoningStart("r1-second", fantasy.ReasoningContent{Text: "cut-attempt second block"}))
+	require.NoError(t, f.ts.onReasoningDelta("r1-second", " deeper"))
 
 	f.ts.onRetry(codexCutError(), 2*time.Second)
 
@@ -98,9 +137,9 @@ func TestStreamRetryDiscardsCutAttemptContent(t *testing.T) {
 	persisted, err = f.svc.Get(context.Background(), stepMsg.ID)
 	require.NoError(t, err)
 	require.Equal(t, "the full answer", persisted.Content().Text)
-	require.Equal(t, "retry thinking deeper", persisted.ReasoningContent().Thinking)
 	require.Equal(t, "the full answer", f.ts.currentAssistant.FullText())
-	require.Equal(t, "retry thinking deeper", f.ts.currentAssistant.ReasoningContent().Thinking)
+	require.Equal(t, []message.ReasoningContent{{Thinking: "retry thinking deeper", StartedAt: persisted.ReasoningContents()[0].StartedAt}}, persisted.ReasoningContents())
+	require.Equal(t, "retry thinking deeper", f.ts.currentAssistant.FullReasoningText())
 }
 
 // TestStreamRetryWithoutFollowupDeltaKeepsPartialForContinuation pins the
