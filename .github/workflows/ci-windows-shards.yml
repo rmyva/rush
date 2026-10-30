@@ -91,8 +91,9 @@ jobs:
       matrix:
         shard: [A, B, C, D]
     runs-on: windows-latest
-    # Runaway backstop only — shards are expected to finish well under this.
-    timeout-minutes: 60
+    # Runaway backstop only. Shards A and D usually take 25-40 min; a slow runner
+    # took 60 min on shard A (run 41017535293) and the job was cancelled mid-suite.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
