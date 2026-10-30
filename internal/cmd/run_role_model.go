@@ -10,6 +10,16 @@ import (
 	"github.com/PHPCraftdream/rush/internal/config"
 )
 
+// validateRunRole applies the run command's required-role and vocabulary checks.
+// It is separate from boot/config loading so resume guidance can be checked
+// without starting a run.
+func validateRunRole(role string) (config.SelectedModelType, error) {
+	if role == "" {
+		return "", fmt.Errorf("--role is required: pass --role smart, --role fast, or, if configured, --role worker / --role reviewer")
+	}
+	return resolveModelRole(role)
+}
+
 // foldRoleModel validates --role and resolves --continue's session first
 // (R2C-14). Since plan D2 (docs/plans/2026-10-15-role-models-hot-reload.md
 // §2.2) the role's MODEL is no longer folded into the smart slot: the

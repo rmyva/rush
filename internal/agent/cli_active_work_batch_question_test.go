@@ -54,7 +54,7 @@ func seedQuestionStop(t *testing.T, coord *coordinator, childID string) {
 	t.Helper()
 	ctx := context.Background()
 	qe := &AwaitingAnswerError{Question: "which one?", SessionID: childID}
-	title, details := awaitingAnswerStoppedFinishText(qe)
+	title, details := awaitingAnswerStoppedFinishText(qe, "smart")
 	_, err := coord.messages.Create(ctx, childID, message.CreateMessageParams{
 		Role: message.Assistant,
 		Parts: []message.ContentPart{

@@ -526,17 +526,7 @@ rush run --role smart --timeout 5m --session "long-task" "refactor the storage l
 			}
 		}
 
-		// --role is required so a `rush run` invocation always declares
-		// its intent (cheap-and-fast vs strong-and-slow), instead of
-		// silently defaulting to smart and burning tokens unintentionally.
-		// The role vocabulary (smart/fast/worker/reviewer) and the
-		// invalid-value wording are shared with `rush ping` via
-		// resolveModelRole; only the empty-is-required rule is
-		// command-specific.
-		if role == "" {
-			return fmt.Errorf("--role is required: pass --role smart, --role fast, or, if configured, --role worker / --role reviewer")
-		}
-		modelType, err := resolveModelRole(role)
+		modelType, err := validateRunRole(role)
 		if err != nil {
 			return err
 		}

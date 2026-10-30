@@ -327,9 +327,9 @@ func TestClaudeInit_CreatesWrushCommand(t *testing.T) {
 	got := string(bts)
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")
-	assert.Contains(t, got, "/wrush")
-	assert.Contains(t, got, "git worktree add")
-	assert.Contains(t, got, "Mandatory: an isolated worktree, every time")
+	assert.Contains(t, got, "/wrush <task>` is opt-in")
+	assert.Contains(t, got, "dedicated git worktree—even for solo, trivial, or self-performed work")
+	assert.Contains(t, got, "git worktree add -b <task-slug>")
 	assert.Contains(t, got, "Commit the transferred changes in the primary branch")
 }
 
@@ -373,8 +373,9 @@ func TestClaudeInit_CreatesWcrushCommand(t *testing.T) {
 	assert.Contains(t, got, claudeSlashCommandSentinel)
 	assert.Contains(t, got, "$ARGUMENTS")
 	assert.Contains(t, got, "/wcrush")
-	assert.Contains(t, got, "opt-in only")
+	assert.Contains(t, got, "/wcrush <task>` is opt-in")
 	assert.Contains(t, got, "## Mandatory: two phases")
+	assert.Contains(t, got, "`/wrush`'s dedicated git worktree, no-sub-agent-commit/push, orchestrator transfer/commit, and worktree removal rules remain in force")
 	assert.Contains(t, got, "commits only those changes before removing the worktree")
 	assert.Contains(t, got, "read the `wrush.md` file in this")
 	assert.NotContains(t, got, "NAME PROVISIONAL")

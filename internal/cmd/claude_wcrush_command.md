@@ -2,42 +2,15 @@
 description: Delegate this task to a rush sub-agent that must work only inside an isolated git worktree and never run the tests — execution and verification move to a second, orchestrator-driven phase
 ---
 
-This skill is **opt-in only** — invoked by typing `/wcrush <task>`.
-**Do NOT auto-invoke on later turns.**
+`/wcrush <task>` is opt-in; do not auto-invoke on later turns. **Before doing anything else, read the `wrush.md` file in this same directory in full** — `/wcrush` inherits its worktree, refusal/fallback, `--allow-peak-hours`, `awaiting_answer`, smart/orchestrator, launch flags, `--restrict-run`, monitoring, `sessions inject`, lock recovery, and verification/merge/cleanup rules. Follow it except where this skill assigns testing to phase 2.
 
-`/wcrush` is `/wrush` plus one hard rule: the sub-agent NEVER runs the
-tests. **Before doing anything else, read the `wrush.md` file in this
-same directory in full** — it defines the whole playbook `/wcrush`
-inherits unchanged: the mandatory isolated worktree, refusal criteria,
-rate-limit fallback, `--allow-peak-hours` rules, resuming
-`awaiting_answer`, orchestrator mode, every `rush run` launching flag,
-`--restrict-run`, monitoring/`sessions watch`, `sessions inject`,
-stuck-lock recovery, and the zero-trust verification checklist. Only
-the additions below change anything.
+## Mandatory: two phases — the sub-agent does not run tests
 
-## Mandatory: two phases — the sub-agent never runs the tests
+**Why:** Concurrent `go test -race` runs have hit Windows `ERROR_COMMITMENT_LIMIT` (errno=1455), while writing costs little memory. Also, an agent previously hung during a revert-check after injecting `lifecycleMu.Lock()` around a disk read in `internal/agent/tools/mcp/init.go`, leaving production code broken. Worktree isolation kept it out of the primary checkout. Keeping execution/revert-checks out of phase 1 prevents this kind of test-induced landmine.
 
-Two problems, one mechanism.
+### Phase 1 — write and static checks, in parallel
 
-**Throughput.** On this machine the bottleneck for parallel agents is
-not git, it is memory: two concurrent `go test -race` runs hit Windows
-`ERROR_COMMITMENT_LIMIT` (errno=1455) and take each other down. The
-thinking-and-writing phase costs almost nothing. So: N agents write
-code in parallel; the orchestrator runs the suites one at a time.
-
-**Safety.** This one is not theoretical. In the session that motivated
-this command, a delegated agent hung mid-revert-check and left
-`internal/agent/tools/mcp/init.go` deliberately broken — it had
-injected a `lifecycleMu.Lock()` around a disk read to prove a test
-could fail, and died before restoring it. Only worktree isolation kept
-that out of the main checkout. An agent that never runs tests never
-neuters production code to watch a test fail, so it cannot leave that
-landmine at all.
-
-### Phase 1 — write and statically verify, in parallel
-
-The sub-agent writes the production code and the tests, and brings
-them to "compiles and passes static analysis":
+The sub-agent writes production code and tests. It MUST run these memory-light checks (and the project's linter if cheap):
 
 ```
 go build ./...
@@ -45,80 +18,41 @@ go vet ./...
 gofmt -l .
 ```
 
-plus the project's linter if it is cheap to run. These cost little
-memory — running them is REQUIRED, not merely allowed. Handing over
-code that does not compile defeats the whole arrangement.
+Hand over code that compiles and passes static analysis. Phase 1 forbids `go test` in any form, revert-checks, debugging by running anything, and neutering production code to observe failure. These belong to phase 2.
 
-**Phase 1 forbids:** `go test` in any form; revert-checks; debugging
-by running anything; neutering production code to observe a failure.
-All of that moves to phase 2.
+### Handover — final message contract
 
-### The handover — the final message is the contract
+The agent's final assistant message must state plainly that work is **NOT verified by execution**, and list:
 
-The agent ends its turn with a final assistant text message that
-states plainly the work is **NOT verified by execution**, and lists:
+1. Tests written and the failure scenario each catches.
+2. For each, the exact revert-check (what to neuter and expected failure output).
+3. Exactly what to run, and in what order.
 
-1. **Which tests were written**, and what failure scenario each is
-   meant to catch.
-2. **The revert-check it intends for each** — precisely what to neuter
-   so the test should fail, and what failure output is expected.
-3. **What exactly needs to be run, and in what order.**
+Without this, phase 2 must reverse-engineer the intent.
 
-Without that list, phase 2 begins by reverse-engineering someone
-else's intent.
+### Phase 2 — with orchestrator permission, same session
 
-### Phase 2 — on the orchestrator's permission, same session
-
-The orchestrator resumes THE SAME session:
+Resume the **same** session from the worktree that created it. A session belongs to its creating checkout, so run this command with the worktree as the current directory; do not resume it from the primary checkout:
 
 ```
 rush run --role smart --session <same id> "<permission and what to run>"
 ```
 
-The conversation context is preserved, so the brief is not repeated.
-Only now does the agent run the tests, perform the revert-checks, and
-fix what fails.
+Context is preserved; only now may the agent run tests, perform revert-checks, and fix failures. `--role` is mandatory when resuming; omitting it exits with code 1.
 
-**`--role` is mandatory when resuming** — omitting it exits
-immediately with code 1. (Learned the hard way in the motivating
-session.)
+**Reviewer auto-pass:** with a reviewer configured, this successful `--role smart` resume adds a Reviewer turn reviewing the complete phase-1+phase-2 session. Its conclusion is carried in the JSON envelope's additive `review` field; the executor's answer remains `final_text`. This is Rush-driven, not extra requested work; unconfigure the reviewer to disable it.
 
-**Reviewer auto-pass:** if a reviewer model is configured, this
-phase-2 resume is a `--role smart` run — so once it finishes cleanly,
-rush appends one more turn on the Reviewer model that reviews the whole
-phase-1+phase-2 session and ends with its own conclusion. That
-conclusion is the run's `final_text`; the phase-2 agent's own last
-message is not. Do not mistake the review turn for unrequested extra
-work: it is driven by rush itself, and unconfiguring the reviewer
-turns it off.
+## Inherited rules that phase split changes
 
-## Carried over from wrush.md, unchanged
-
-Phase 2 moves who runs what, not any of wrush.md's rules — restated
-here so neither side of the split can claim it didn't know:
-
-- **The worktree mandate stands**: a dedicated worktree under
-  `<repo-root>/worktrees/`, in-tree and gitignored, every invocation,
-  solo or parallel. Never the primary checkout.
-- **The sub-agent never commits or pushes**; the orchestrator reviews
-  the diff, transfers verified changes to the primary branch, and
-  commits only those changes before removing the worktree. Pushing
-  still requires a separate operator request.
+- **Delegation stays enabled:** task text may constrain the deliverable, but must not prohibit smart's internal delegation. Nested executors starting is expected, not a reason to stop or ask the operator: launch and wait for the run to finish.
 - **OOM discipline belongs to phase 2** — the other half of the same
   bargain: `-parallel 2` for heavy packages, never two heavy runs at
   once, long runs backgrounded via the Bash tool's
   `run_in_background: true` parameter and never with a trailing `&`.
-- **Zero trust survives the split.** The phase-1 handover and the
-  phase-2 "tests pass" are CLAIMS, not receipts. The diff, the tests
-  and the revert-checks get verified by the orchestrator personally —
-  run one at a time, inside the worktree (wrush.md's checklist).
-- **Do not touch** `CLAUDE.md`, `.github/workflows/`,
-  `web/dist/.gitkeep`; no `ReportFindings` tool; no `code-review`
-  skill.
+- **Zero trust:** phase-1 handover and phase-2 pass reports are claims, not receipts. The orchestrator personally verifies the diff, tests, and revert-checks, one at a time, inside the worktree, using wrush.md's checklist.
+- Do not touch `CLAUDE.md`, `.github/workflows/`, or `web/dist/.gitkeep`; do not use `ReportFindings` or the `code-review` skill.
 
-**Not finished until changes are merged, committed, and the worktree
-removed** — wrush.md steps 5–7. An unmerged or un-removed worktree is
-unfinished work, not a deliverable.
+**`/wrush`'s dedicated git worktree, no-sub-agent-commit/push, orchestrator transfer/commit, and worktree removal rules remain in force. The orchestrator commits only those changes before removing the worktree. Do not report done until changes are merged, committed, and the worktree removed.**
 
 ## Task
 

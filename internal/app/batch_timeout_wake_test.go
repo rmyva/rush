@@ -97,6 +97,7 @@ func TestBatchTimeoutWakeDispatcherJoinsWhenCanceledWaitingForSlot(t *testing.T)
 		t.Fatal("Stop did not join dispatches")
 	}
 }
+
 func TestBatchTimeoutWakeDispatcherDoesNotSerializeBlockedSessions(t *testing.T) {
 	d := newBatchTimeoutWakeDispatcher()
 	t.Cleanup(d.Stop)

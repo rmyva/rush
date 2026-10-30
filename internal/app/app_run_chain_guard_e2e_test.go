@@ -103,8 +103,8 @@ func (s *chainStderr) String() string {
 // the provider handler release timer 1 after the launch turn's clean closing
 // step, timer 2 after leg 1's reaction was served, and W after leg 2's, so
 // the completions can never be drained together or consumed inside the
-// launch turn. Without W the sleeps of the old #1113 scenario run for real
-// and the chain forms.
+// launch turn. Without W, the inline window is disabled and the 6-second
+// sleeps run for real while the chain forms.
 func chainE2E(t *testing.T, withW bool) (app *App, sessionID string, res *RunResult, stderr *chainStderr, requests int32) {
 	t.Helper()
 	defer agent.SetDrainPacingForTest(100*time.Millisecond, 50*time.Millisecond, 0)()
@@ -134,28 +134,25 @@ func chainE2E(t *testing.T, withW bool) (app *App, sessionID string, res *RunRes
 		if !withW {
 			// No W: every sleep launches for real (ownWork is false and a
 			// leg's streak never reaches S), so each leg's completion feeds the
-			// next one and #1113 counts the chain.
-			// The ticks must detach (batch escapes after the 3s inline window): a
-			// sync batch job would
-			// complete inside the window and never become reaction debt. The 4s
-			// commands are forced by the fixed 3s window
-			// (inlineWindowSeconds, batch_install_tools.go:271).
+			// next one and #1113 counts the chain. This scenario disables the
+			// inline window. The 6s ticks give each drain several seconds of
+			// slack before completion.
 			switch {
 			case n == 1:
-				calls := []string{admissionSSEToolCall("t1", "call-tick1", "bash", `{"command":"sleep 4","run_in_background":true,"description":"tick"}`)}
+				calls := []string{admissionSSEToolCall("t1", "call-tick1", "bash", `{"command":"sleep 6","run_in_background":true,"description":"tick"}`)}
 				calls = append(calls, admissionSSEStop("turn", "tool_calls"))
 				admissionWriteSSE(w, calls)
 			case n == 2:
 				admissionWriteSSE(w, []string{admissionSSEText("a", "first answer"), admissionSSEStop("a", "stop")})
 			case n >= 3 && n <= 8:
-				// Each chain Drain is two provider steps: one detached bash `sleep 4`
+				// Each chain Drain is two provider steps: one detached bash `sleep 6`
 				// tool call, then a plain text step that ends the leg (the model
 				// has nothing to say while waiting). n=3/4 -> tick2, 5/6 -> tick3,
 				// 7/8 -> tick4.
 				step := n - 2
 				if step%2 == 1 {
 					admissionWriteSSE(w, []string{
-						admissionSSEToolCall("t", "call-tick"+itoa(int(step)/2+2), "bash", `{"command":"sleep 4","run_in_background":true,"description":"tick"}`),
+						admissionSSEToolCall("t", "call-tick"+itoa(int(step)/2+2), "bash", `{"command":"sleep 6","run_in_background":true,"description":"tick"}`),
 						admissionSSEStop("t", "tool_calls"),
 					})
 					return
@@ -259,6 +256,9 @@ func chainE2E(t *testing.T, withW bool) (app *App, sessionID string, res *RunRes
 			}
 		}
 	})
+	if !withW {
+		require.True(t, agent.SetInlineWindowForTest(application.AgentCoordinator, false))
+	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()

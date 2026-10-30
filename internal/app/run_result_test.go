@@ -107,7 +107,7 @@ func TestBuildRunResult_AwaitingAnswer(t *testing.T) {
 		SessionID: "sess-1",
 	}
 	title := "Stopped: agent asked a question and is awaiting an answer"
-	details := awaitingErr.Error() + "\n\nQUESTION: Which environment should I deploy to?\n\nrush run --session sess-1 \"<your answer>\""
+	details := awaitingErr.Error() + "\n\nQUESTION: Which environment should I deploy to?\n\nrush run --role smart --session sess-1 \"<your answer>\""
 
 	// finalReason mirrors what agent.go's AddFinish actually records for
 	// this path: message.FinishReasonError, because there is no dedicated
@@ -123,7 +123,7 @@ func TestBuildRunResult_AwaitingAnswer(t *testing.T) {
 	assert.Equal(t, "awaiting_answer", r.ExitReason, "must not fall through to the generic error reason")
 	assert.Contains(t, r.Error, title)
 	assert.Contains(t, r.Error, "Which environment should I deploy to?")
-	assert.Contains(t, r.Error, "rush run --session sess-1")
+	assert.Contains(t, r.Error, "rush run --role smart --session sess-1")
 }
 
 // TestBuildRunResult_AwaitingAnswer_NoFanoutOrEmptyWarning verifies the

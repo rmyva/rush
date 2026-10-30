@@ -608,7 +608,7 @@ func (ts *turnStream) recordStepFinish(finishReason message.FinishReason) {
 	ts.mu.Lock()
 	if finishReason == message.FinishReasonUnknown &&
 		ts.currentAssistant.FullText() == "" &&
-		ts.currentAssistant.ReasoningContent().Thinking == "" &&
+		ts.currentAssistant.FullReasoningText() == "" &&
 		len(ts.currentAssistant.ToolCalls()) == 0 {
 		slog.Warn(
 			"agent: empty stream from provider — recording as error",
@@ -865,7 +865,7 @@ func stepIsReaction(m message.Message) bool {
 // hasReactionContent reports whether m carries real content (text, a tool
 // call or reasoning), whatever its finish.
 func hasReactionContent(m message.Message) bool {
-	return m.FullText() != "" || len(m.ToolCalls()) > 0 || m.ReasoningContent().Thinking != ""
+	return m.FullText() != "" || len(m.ToolCalls()) > 0 || m.FullReasoningText() != ""
 }
 
 func (ts *turnStream) stopConditions() []fantasy.StopCondition {

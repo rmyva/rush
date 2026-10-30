@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -232,7 +233,17 @@ func (m *Message) ReasoningContent() ReasoningContent {
 	return ReasoningContent{}
 }
 
-// ImageURLContent returns all image URL content parts.
+// ReasoningContents returns all reasoning blocks in part arrival order.
+func (m *Message) ReasoningContents() []ReasoningContent {
+	var contents []ReasoningContent
+	for _, part := range m.Parts {
+		if c, ok := part.(ReasoningContent); ok {
+			contents = append(contents, c)
+		}
+	}
+	return contents
+}
+
 func (m *Message) ImageURLContent() []ImageURLContent {
 	imageURLContents := make([]ImageURLContent, 0)
 	for _, part := range m.Parts {
@@ -308,7 +319,29 @@ func (m *Message) FinishReason() FinishReason {
 
 // IsThinking returns true if the message is currently in a thinking state.
 func (m *Message) IsThinking() bool {
-	return m.ReasoningContent().Thinking != "" && m.Content().Text == "" && !m.IsFinished()
+	return m.FullReasoningText() != "" && m.FullText() == "" && !m.IsFinished()
+}
+
+// FullText joins text blocks in arrival order.
+func (m *Message) FullText() string {
+	var texts []string
+	for _, part := range m.Parts {
+		if c, ok := part.(TextContent); ok {
+			texts = append(texts, c.Text)
+		}
+	}
+	return strings.Join(texts, "\n\n")
+}
+
+// FullReasoningText joins reasoning text blocks in arrival order.
+func (m *Message) FullReasoningText() string {
+	var texts []string
+	for _, part := range m.Parts {
+		if c, ok := part.(ReasoningContent); ok && c.Thinking != "" {
+			texts = append(texts, c.Thinking)
+		}
+	}
+	return strings.Join(texts, "\n\n")
 }
 
 // AppendContent appends text to the text content part.
@@ -325,74 +358,80 @@ func (m *Message) AppendContent(delta string) {
 	}
 }
 
-// AppendReasoningContent appends text to the reasoning content part.
-func (m *Message) AppendReasoningContent(delta string) {
-	found := false
-	for i, part := range m.Parts {
-		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{
-				Thinking:   c.Thinking + delta,
-				Signature:  c.Signature,
-				StartedAt:  c.StartedAt,
-				FinishedAt: c.FinishedAt,
+// reasoningPartIndex returns the most recent unfinished reasoning block, or
+// the most recent block when all existing blocks are finished. Reasoning
+// deltas and metadata can arrive after text/tool parts have been interleaved.
+func (m *Message) reasoningPartIndex() int {
+	last := -1
+	for i := len(m.Parts) - 1; i >= 0; i-- {
+		if reasoning, ok := m.Parts[i].(ReasoningContent); ok {
+			if last == -1 {
+				last = i
 			}
-			found = true
+			if reasoning.FinishedAt == 0 {
+				return i
+			}
 		}
 	}
-	if !found {
-		m.Parts = append(m.Parts, ReasoningContent{
-			Thinking:  delta,
-			StartedAt: time.Now().Unix(),
-		})
-	}
+	return last
 }
 
-// AppendReasoningSignature appends a signature to the reasoning content part.
+// AppendReasoningContent appends text to the most recent unfinished reasoning content block.
+func (m *Message) AppendReasoningContent(delta string) {
+	if i := m.reasoningPartIndex(); i >= 0 {
+		c := m.Parts[i].(ReasoningContent)
+		c.Thinking += delta
+		m.Parts[i] = c
+		return
+	}
+	m.Parts = append(m.Parts, ReasoningContent{Thinking: delta, StartedAt: time.Now().Unix()})
+}
+
+// AppendReasoningSignature appends a signature to the most recent unfinished reasoning content block.
 func (m *Message) AppendReasoningSignature(signature string) {
-	for i, part := range m.Parts {
-		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{
-				Thinking:   c.Thinking,
-				Signature:  c.Signature + signature,
-				StartedAt:  c.StartedAt,
-				FinishedAt: c.FinishedAt,
-			}
-			return
-		}
+	if i := m.reasoningPartIndex(); i >= 0 {
+		c := m.Parts[i].(ReasoningContent)
+		c.Signature += signature
+		m.Parts[i] = c
+		return
 	}
 	m.Parts = append(m.Parts, ReasoningContent{Signature: signature})
 }
 
-// FinishThinking marks the reasoning content as finished.
+// FinishThinking marks the most recent unfinished reasoning block as finished.
 func (m *Message) FinishThinking() {
-	for i, part := range m.Parts {
-		if c, ok := part.(ReasoningContent); ok {
-			if c.FinishedAt == 0 {
-				m.Parts[i] = ReasoningContent{
-					Thinking:   c.Thinking,
-					Signature:  c.Signature,
-					StartedAt:  c.StartedAt,
-					FinishedAt: time.Now().Unix(),
-				}
-			}
-			return
+	if i := m.reasoningPartIndex(); i >= 0 {
+		c := m.Parts[i].(ReasoningContent)
+		if c.FinishedAt == 0 {
+			c.FinishedAt = time.Now().Unix()
+			m.Parts[i] = c
 		}
 	}
 }
 
 // ThinkingDuration returns the duration of the thinking phase.
 func (m *Message) ThinkingDuration() time.Duration {
-	reasoning := m.ReasoningContent()
-	if reasoning.StartedAt == 0 {
+	var start, end int64
+	unfinished := false
+	for _, part := range m.Parts {
+		if reasoning, ok := part.(ReasoningContent); ok {
+			if start == 0 && reasoning.StartedAt != 0 {
+				start = reasoning.StartedAt
+			}
+			if reasoning.FinishedAt == 0 {
+				unfinished = true
+			} else if reasoning.FinishedAt > end {
+				end = reasoning.FinishedAt
+			}
+		}
+	}
+	if start == 0 {
 		return 0
 	}
-
-	endTime := reasoning.FinishedAt
-	if endTime == 0 {
-		endTime = time.Now().Unix()
+	if unfinished || end == 0 {
+		end = time.Now().Unix()
 	}
-
-	return time.Duration(endTime-reasoning.StartedAt) * time.Second
+	return time.Duration(end-start) * time.Second
 }
 
 // FinishToolCall marks a tool call as finished.

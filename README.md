@@ -365,8 +365,11 @@ jq -r '.error'       out.json   # question + suggested options + resume command
   a normal continuation point, not something to retry.
 - The question, suggested options, and the exact resume command live in
   `.error` (not `.final_text`).
-- Resume with `rush run --session <id> "<your answer>"` — **not**
-  `rush sessions inject`, since the process already exited.
+- Resume with the role preserved, e.g. `rush run --role smart --session <id> "<your answer>"` — **not**
+  `rush sessions inject`, since the process already exited. The stopped run's
+  actual role (smart, fast, worker, or reviewer) is included in its resume
+  command; if the role is unknown, guidance omits the command and asks you to
+  choose a supported role rather than suggesting a rejected invocation.
 
 **Orchestrator mode:** when `--role smart` is used and a `worker` model
 is configured, the smart agent's system prompt gains an "Orchestrator

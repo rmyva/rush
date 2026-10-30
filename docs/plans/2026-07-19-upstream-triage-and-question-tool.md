@@ -80,7 +80,7 @@ auto-approve, никакого блокирующего permission-диалог�
   `AwaitingAnswerError` (аналог `PeakHoursError`), `AwaitingAnswerGuidance
   (question, sessionID string) string` (аналог `PeakHoursGuidance`) — текст
   уже сформулирован в этой сессии, с готовой командой резюме
-  `rush run --session <id> "<answer>"`.
+  `rush run --role <role> --session <id> "<answer>"`.
 - Wiring в `coordinator.go`/`agent.go`'s `AddFinish`-путь — форсирует
   завершение хода, как peak-hours stop.
 

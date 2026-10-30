@@ -24,6 +24,7 @@ type retryCandidate struct {
 	started   chan struct{}
 	release   chan struct{}
 	closed    chan struct{}
+	stop      chan struct{}
 	tokens    chan string
 	startOnce sync.Once
 	closeOnce sync.Once
@@ -84,8 +85,10 @@ func newRetryCandidate(t *testing.T, toolName string, blocked bool) *retryCandid
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 		closed:  make(chan struct{}),
+		stop:    make(chan struct{}),
 		tokens:  make(chan string, 16),
 	}
+	t.Cleanup(func() { close(candidate.stop) })
 	mcp.AddTool(candidate.server, &mcp.Tool{Name: toolName}, func(context.Context, *mcp.CallToolRequest, any) (*mcp.CallToolResult, any, error) {
 		return &mcp.CallToolResult{}, nil, nil
 	})
@@ -93,10 +96,12 @@ func newRetryCandidate(t *testing.T, toolName string, blocked bool) *retryCandid
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
 			if blocked && method == "tools/list" {
 				go func() {
+					// Lives until the request is cancelled or the test ends: a fixed
+					// cap races with disk-bound config persists on loaded Windows runners.
 					select {
 					case <-ctx.Done():
 						candidate.closeOnce.Do(func() { close(candidate.closed) })
-					case <-time.After(5 * time.Second):
+					case <-candidate.stop:
 					}
 				}()
 			}

@@ -84,12 +84,14 @@ func TestLiveAttachBindingIdentity(t *testing.T) {
 	// First execution through the real ingress; the probe waits for the
 	// provider's OWN "entered" signal — WriteFile has taken its gate and is
 	// physically in flight — never merely the leaf having started.
-	resp1Ch := make(chan fantasy.ToolResponse, 1)
-	err1Ch := make(chan error, 1)
+	type invokeResult struct {
+		resp fantasy.ToolResponse
+		err  error
+	}
+	resp1Ch := make(chan invokeResult, 1)
 	go func() {
 		resp, err := env.install.Runtime.Invoke(context.Background(), invA, env.leaf, callA)
-		resp1Ch <- resp
-		err1Ch <- err
+		resp1Ch <- invokeResult{resp: resp, err: err}
 	}()
 	select {
 	case <-env.fake.enteredCh():
@@ -105,13 +107,18 @@ func TestLiveAttachBindingIdentity(t *testing.T) {
 	// Validate, re-normalizes, re-hashes and must JOIN the in-flight
 	// execution: one root, one leaf run, zero additional provider writes.
 	retryInv, retryCall := invRaw, callA
-	retryRespCh := make(chan fantasy.ToolResponse, 1)
-	retryErrCh := make(chan error, 1)
+	retryRespCh := make(chan invokeResult, 1)
 	go func() {
 		resp, err := env.install.Runtime.Invoke(context.Background(), retryInv, env.leaf, retryCall)
-		retryRespCh <- resp
-		retryErrCh <- err
+		retryRespCh <- invokeResult{resp: resp, err: err}
 	}()
+	entry := env.install.Runtime.entryFor(env.sessionID, callID)
+	require.NotNil(t, entry, "first invocation remains in flight at provider gate")
+	select {
+	case <-entry.joined:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "matching retry never joined the in-flight invocation")
+	}
 
 	// Different REGISTERED binding on the same live call identity: rejected.
 	other := newH2aGatingDisk()
@@ -135,26 +142,20 @@ func TestLiveAttachBindingIdentity(t *testing.T) {
 	// Physical return: the write lands once; both waiters get the ONE
 	// response; exactly one root settles.
 	env.fake.letGo()
-	var resp1, respRetry fantasy.ToolResponse
-	require.Eventually(t, func() bool {
-		select {
-		case resp1 = <-resp1Ch:
-			return true
-		default:
-			return false
-		}
-	}, 5*time.Second, time.Millisecond, "first caller delivered")
-	require.Eventually(t, func() bool {
-		select {
-		case respRetry = <-retryRespCh:
-			return true
-		default:
-			return false
-		}
-	}, 5*time.Second, time.Millisecond, "matching-attach joiner delivered")
-	require.Equal(t, resp1, respRetry, "the joiner receives the first caller's exact envelope")
-	require.NoError(t, <-err1Ch)
-	require.NoError(t, <-retryErrCh)
+	var first, retry invokeResult
+	select {
+	case first = <-resp1Ch:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "first caller delivery timed out")
+	}
+	select {
+	case retry = <-retryRespCh:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "matching-attach joiner delivery timed out")
+	}
+	require.NoError(t, first.err)
+	require.NoError(t, retry.err)
+	require.Equal(t, first.resp, retry.resp, "the joiner receives the first caller's exact envelope")
 	require.Equal(t, 1, env.leaf.runCount(), "matching attach must not re-submit: one leaf run")
 	require.Equal(t, 1, env.fake.writeCount(), "one physical provider write")
 	require.Zero(t, other.writeCount(), "the rejected binding never touched its provider")

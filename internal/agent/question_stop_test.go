@@ -8,12 +8,12 @@ import (
 
 func TestAwaitingAnswerGuidance(t *testing.T) {
 	t.Run("without options", func(t *testing.T) {
-		guidance := AwaitingAnswerGuidance("Which env should I deploy to?", nil, "sess-123")
+		guidance := AwaitingAnswerGuidance("Which env should I deploy to?", nil, "sess-123", "smart")
 
 		if !strings.Contains(guidance, "QUESTION: Which env should I deploy to?") {
 			t.Errorf("guidance %q must echo the question verbatim under a QUESTION: label", guidance)
 		}
-		if !strings.Contains(guidance, "rush run --session sess-123") {
+		if !strings.Contains(guidance, "rush run --role smart --session sess-123") {
 			t.Errorf("guidance %q must contain a ready-to-run resume command with the session id substituted in", guidance)
 		}
 		if !strings.Contains(strings.ToLower(guidance), "not a crash") {
@@ -28,7 +28,7 @@ func TestAwaitingAnswerGuidance(t *testing.T) {
 	})
 
 	t.Run("with options", func(t *testing.T) {
-		guidance := AwaitingAnswerGuidance("Proceed with the migration?", []string{"yes", "no", "dry-run only"}, "sess-456")
+		guidance := AwaitingAnswerGuidance("Proceed with the migration?", []string{"yes", "no", "dry-run only"}, "sess-456", "smart")
 
 		if !strings.Contains(guidance, "QUESTION: Proceed with the migration?") {
 			t.Errorf("guidance %q must echo the question verbatim", guidance)
@@ -36,16 +36,29 @@ func TestAwaitingAnswerGuidance(t *testing.T) {
 		if !strings.Contains(guidance, "Suggested options: yes | no | dry-run only") {
 			t.Errorf("guidance %q must list the suggested options", guidance)
 		}
-		if !strings.Contains(guidance, "rush run --session sess-456") {
+		if !strings.Contains(guidance, "rush run --role smart --session sess-456") {
 			t.Errorf("guidance %q must contain a ready-to-run resume command with the session id substituted in", guidance)
 		}
 	})
 }
 
+func TestAwaitingAnswerGuidanceRoles(t *testing.T) {
+	for _, role := range []string{"smart", "fast", "worker", "reviewer"} {
+		guidance := AwaitingAnswerGuidance("Q?", nil, "s1", role)
+		if !strings.Contains(guidance, "rush run --role "+role+" --session s1") {
+			t.Errorf("role %q missing from resume guidance: %q", role, guidance)
+		}
+	}
+	unknown := AwaitingAnswerGuidance("Q?", nil, "s1", "custom")
+	if strings.Contains(unknown, "rush run ") || !strings.Contains(unknown, `role "custom" is unknown`) {
+		t.Errorf("unknown role must be explained without a resume command: %q", unknown)
+	}
+}
+
 func TestAwaitingAnswerStoppedFinishText(t *testing.T) {
 	t.Run("generic error falls back gracefully", func(t *testing.T) {
 		underlying := errors.New("agent asked a question and is awaiting an answer (session sess-789): what now?")
-		msg, details := awaitingAnswerStoppedFinishText(underlying)
+		msg, details := awaitingAnswerStoppedFinishText(underlying, "smart")
 
 		if msg == "" {
 			t.Fatal("message must be non-empty — empty message looks identical to a voluntary finish")
@@ -67,7 +80,7 @@ func TestAwaitingAnswerStoppedFinishText(t *testing.T) {
 			Options:   []string{"staging", "prod"},
 			SessionID: "sess-abc",
 		}
-		msg, details := awaitingAnswerStoppedFinishText(err)
+		msg, details := awaitingAnswerStoppedFinishText(err, "smart")
 
 		if msg == "" {
 			t.Fatal("message must be non-empty")
@@ -78,7 +91,7 @@ func TestAwaitingAnswerStoppedFinishText(t *testing.T) {
 		if !strings.Contains(details, "Suggested options: staging | prod") {
 			t.Errorf("details %q must contain the suggested options", details)
 		}
-		if !strings.Contains(details, "rush run --session sess-abc") {
+		if !strings.Contains(details, "rush run --role smart --session sess-abc") {
 			t.Errorf("details %q must contain an explicit resume command an orchestrator can act on", details)
 		}
 	})
