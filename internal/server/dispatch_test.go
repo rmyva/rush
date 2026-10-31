@@ -116,7 +116,7 @@ func TestDispatchBoundsConcurrencyPerConnection(t *testing.T) {
 	var maxObserved int32
 	var started sync.WaitGroup
 	started.Add(burst)
-	var poolStarted = make(chan struct{}, workerPoolSize)
+	poolStarted := make(chan struct{}, workerPoolSize)
 
 	for i := 0; i < burst; i++ {
 		producers.Add(1)

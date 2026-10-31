@@ -32,8 +32,10 @@ type StreamResult struct {
 	ScanErr error
 }
 
-const maxRetainedOutputBytes = 1024 * 1024
-const outputTruncationMarker = "\n...(output truncated; retained output capped)\n"
+const (
+	maxRetainedOutputBytes = 1024 * 1024
+	outputTruncationMarker = "\n...(output truncated; retained output capped)\n"
+)
 
 type StreamSession struct {
 	stream          fantasy.StreamResponse

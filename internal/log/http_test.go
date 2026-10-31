@@ -496,7 +496,9 @@ func TestHTTPRoundTripLogger_RedactsRequestURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.URL.RawQuery += "&&bad=%zz"
-	_, _ = logger.RoundTrip(req)
+	if resp, _ := logger.RoundTrip(req); resp != nil {
+		_ = resp.Body.Close()
+	}
 
 	logged := logBuf.String()
 	for _, secret := range []string{"user-sentinel", "pass-sentinel", "key-sentinel", "api-key-sentinel", "token-sentinel", "access-sentinel", "signature-sentinel", "sig-sentinel", "secret-sentinel", "password-sentinel"} {

@@ -23,12 +23,15 @@ func (m *stallRetryToolModel) Model() string    { return "stall-retry-test" }
 func (m *stallRetryToolModel) Generate(context.Context, fantasy.Call) (*fantasy.Response, error) {
 	panic("unexpected Generate")
 }
+
 func (m *stallRetryToolModel) GenerateObject(context.Context, fantasy.ObjectCall) (*fantasy.ObjectResponse, error) {
 	panic("unexpected GenerateObject")
 }
+
 func (m *stallRetryToolModel) StreamObject(context.Context, fantasy.ObjectCall) (fantasy.ObjectStreamResponse, error) {
 	panic("unexpected StreamObject")
 }
+
 func (m *stallRetryToolModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
 	if isTitleRequest(call.Prompt) {
 		return func(yield func(fantasy.StreamPart) bool) {
