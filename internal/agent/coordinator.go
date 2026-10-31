@@ -100,8 +100,8 @@ var errAwaitingAnswer = errors.New("agent asked a question and is awaiting an op
 // AwaitingAnswerError is the sentinel error the (forthcoming) question tool
 // returns to force-stop the current turn instead of blocking on a synchronous
 // answer — this fork's `rush run` has no code path that can wait mid-turn
-// for operator input (both headless and web sessions auto-approve
-// permissions unconditionally, see internal/server/handlers.go:163-171), so
+// for operator input (web sessions auto-approve permissions unconditionally,
+// see internal/server/handlers.go:170-175; headless sessions do too), so
 // "ask a question" has to mean "stop the turn cleanly and hand the operator
 // an unambiguous resume command" rather than "block until answered".
 //

@@ -152,9 +152,9 @@ process access as the OS user running `rush`.
 This is **not** the old per-session "YOLO" toggle (that UI feature has
 been removed entirely — see `CHANGELOG.fork.md`). It is unconditional
 for every `rush run` invocation, with no flag to restore per-request
-prompting. The interactive web UI (`rush web`) is different: it still
-shows a permission dialog (Allow / Deny / Allow-always) for each tool
-call unless the operator clicks through it manually.
+prompting. In the web UI (`rush web`), tool calls are also auto-approved
+without a permission dialog, and that auto-approval is re-armed whenever
+a human sends a message.
 
 **Run `rush run` inside an isolated environment — Docker, Podman, a
 VM, or at minimum an OS-level sandbox/dedicated worktree** — whenever
