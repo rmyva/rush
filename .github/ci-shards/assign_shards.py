@@ -10,9 +10,8 @@ Modes:
       `--input -` reads stdin. Nonzero exit = a package was not assigned
       exactly once (this IS the "every package exactly once" assertion).
   --check-coverage --workflow ci-windows-shards.yml --assignment assignment.json
-      Verifies every named Windows test/group step in the active shard workflow
-      appears in shards.toml's [windows_leg] table and maps to a group that
-      exists in the assignment JSON. Nonzero exit = a step would go uncovered.
+      Verifies active group steps and manifest groups in both directions against
+      shards.toml's [windows_leg] table and generated assignment JSON.
 
 Assignment rules:
   * "internal/agent" (agent_isolated) is EXACT match only, and no shard
@@ -202,6 +201,37 @@ def check_coverage(cfg: dict, workflow: str, assignment_path: str) -> None:
             stale.append(f"{step!r} -> {target!r} (no such group in assignment)")
     if stale:
         die("[windows_leg] targets not present in assignment: " + "; ".join(stale))
+
+    # Reverse validation follows [windows_leg] targets, not group-name equality:
+    # workflow step labels may differ from manifest group names.
+    workflow_names = set(names)
+    reverse_missing = []
+    assignment_shards = assignment.get("shards", {})
+    for shard_name, shard in cfg.get("shards", {}).items():
+        assigned_groups = {
+            g.get("name") for g in assignment_shards.get(shard_name, {}).get("groups", [])
+        }
+        for group in shard.get("groups", []):
+            group_name = group.get("name")
+            if group_name not in assigned_groups:
+                reverse_missing.append(f"{group_name!r} missing from assignment shard {shard_name}")
+
+    # Each generated assignment group must resolve through its shard/group
+    # target to at least one active workflow step.
+    for shard_name, shard in assignment_shards.items():
+        for group in shard.get("groups", []):
+            group_name = group.get("name")
+            target = f"{shard_name}/{group_name}"
+            steps = [step for step, mapped in table.items() if mapped == target]
+            if not steps:
+                reverse_missing.append(f"{group_name!r} has no [windows_leg] target {target!r}")
+            elif not any(step in workflow_names for step in steps):
+                reverse_missing.append(
+                    f"{group_name!r} target {target!r} has no active workflow step"
+                )
+    if reverse_missing:
+        die("shards.toml groups not fully covered: " + "; ".join(sorted(reverse_missing)))
+
     print(
         f"assign_shards: coverage OK: {len(names)} ci-windows-shards.yml "
         f"group steps mapped, {len(table)} table entries all resolve"

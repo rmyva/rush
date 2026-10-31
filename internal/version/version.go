@@ -17,18 +17,15 @@ import (
 // lockstep with npm/rush/package.json on every bump.
 const forkBaseVersion = "0.2.0-alpha.19"
 
-// VersionLine is what `rush --version`/`rush version` prints: the fork's
-// release-line version, with no "v" prefix, followed by this specific
-// build's provenance — short commit hash and build time — e.g.
+// VersionLine is what `rush --version`/`rush version` prints: a release-only
+// marker and the release-line version, with no "v" prefix, followed by this
+// specific build's provenance — short commit hash and build time — e.g.
 //
-//	0.2.0-alpha.0 (c34a7334, built 2026-07-31 16:24:26)
+//	release 0.2.0-alpha.0 (c34a7334, built 2026-07-31 16:24:26)
 //
-// The release-line part is deliberately built from forkBaseVersion directly
-// rather than from the package-level Version var — Version carries a commit
-// hash on local dev builds and a "v" prefix on release builds, neither of
-// which belongs in this human-facing summary. Other consumers of Version
-// (user agent, telemetry, MCP handshake, FullVersion for the web UI) are
-// untouched by this.
+// The marker distinguishes an injected release version from a development
+// fallback even when both versions have the same semver. The remaining
+// provenance and upstream-watermark notes below describe common suffix rules.
 //
 // This used to also append "@<UpstreamTriagedVersion>" — how far
 // charmbracelet/crush had been triaged into this fork — but that constant
@@ -44,7 +41,23 @@ const forkBaseVersion = "0.2.0-alpha.19"
 // component is omitted when genuinely unknown rather than printed as
 // "unknown", so the line stays clean for builds that carry no VCS metadata.
 func VersionLine() string {
-	return forkBaseVersion + buildProvenanceSuffix(Commit, BuildTime)
+	return versionLine(Version, Commit, BuildTime)
+}
+
+func versionLine(version, commit, buildTime string) string {
+	if releaseVersion := injectedReleaseVersion(version); releaseVersion != "" {
+		return "release " + releaseVersion + buildProvenanceSuffix(commit, buildTime)
+	}
+	return forkBaseVersion + buildProvenanceSuffix(commit, buildTime)
+}
+
+// injectedReleaseVersion exposes the actual ldflags-injected semver for
+// release binaries while leaving locally-derived development versions alone.
+func injectedReleaseVersion(v string) string {
+	if !strings.HasPrefix(v, "v") || len(v) < 2 || v[1] < '0' || v[1] > '9' {
+		return ""
+	}
+	return strings.TrimPrefix(v, "v")
 }
 
 // buildProvenanceSuffix formats the " (<commit>, built <time>)" tail of
@@ -53,7 +66,15 @@ func VersionLine() string {
 func buildProvenanceSuffix(commit, buildTime string) string {
 	var parts []string
 	if commit != "" && commit != "unknown" {
-		parts = append(parts, shortCommit(commit))
+		dirty := strings.HasSuffix(commit, "-dirty")
+		if dirty {
+			commit = strings.TrimSuffix(commit, "-dirty")
+		}
+		short := shortCommit(commit)
+		if dirty {
+			short += "-dirty"
+		}
+		parts = append(parts, short)
 	}
 	if buildTime != "" && buildTime != "unknown" {
 		parts = append(parts, "built "+buildTime)

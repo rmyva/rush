@@ -84,13 +84,32 @@ def run_coverage_files(shards_path: str, workflow_path: str, assignment: dict) -
         )
 
 
-COVERAGE_TOML = BASE_TOML + '''\
+COVERAGE_TOML = '''\
+module = "example.com/m"
+[shards.A]
+groups = [
+  { name = "test: a", type = "go", packages = ["internal/app"] },
+  { name = "go mod tidy produces no diff", type = "tidy" },
+  { name = "test: npm wrapper cache logic", type = "npm" },
+]
 [windows_leg]
 "test: a" = "A/test: a"
-"go mod tidy produces no diff" = "A/test: a"
-"test: npm wrapper cache logic" = "A/test: a"
+"go mod tidy produces no diff" = "A/go mod tidy produces no diff"
+"test: npm wrapper cache logic" = "A/test: npm wrapper cache logic"
 "go test ./internal/agent/ split into sequential batches" = "agent"
 '''
+
+COVERAGE_ASSIGNMENT = {
+    "shards": {
+        "A": {
+            "groups": [
+                {"name": "test: a"},
+                {"name": "go mod tidy produces no diff"},
+                {"name": "test: npm wrapper cache logic"},
+            ]
+        }
+    }
+}
 
 
 class AssignShardsTests(unittest.TestCase):
@@ -115,18 +134,12 @@ class AssignShardsTests(unittest.TestCase):
         self.assertIn(os.path.basename(missing), p.stderr)
 
     def test_coverage_empty_workflow_fails(self):
-        assignment = {"shards": {"A": {"groups": [{"name": "test: a"}]}}}
+        assignment = COVERAGE_ASSIGNMENT
         p = run_coverage(COVERAGE_TOML, "# empty workflow\\n", assignment)
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("no recognized Windows group steps", p.stderr)
 
-        assignment = {
-            "shards": {
-                "A": {"groups": [{"name": "test: a"}]},
-                "B": {"groups": []},
-                "D": {"groups": []},
-            }
-        }
+        assignment = COVERAGE_ASSIGNMENT
         workflow = '''\
       - name: "test: a"
       - name: go mod tidy produces no diff
@@ -138,13 +151,7 @@ class AssignShardsTests(unittest.TestCase):
         self.assertIn("coverage OK", p.stdout)
 
     def test_coverage_reads_active_workflow_group_names(self):
-        assignment = {
-            "shards": {
-                "A": {"groups": [{"name": "test: a"}]},
-                "B": {"groups": []},
-                "D": {"groups": []},
-            }
-        }
+        assignment = COVERAGE_ASSIGNMENT
         workflow = '''\
       - name: "test: a"
       - name: go mod tidy produces no diff
@@ -160,6 +167,18 @@ class AssignShardsTests(unittest.TestCase):
         p = run_coverage(COVERAGE_TOML, workflow, assignment)
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("test: newly added group", p.stderr)
+
+    def test_reverse_coverage_rejects_removed_workflow_step_with_retained_mapping(self):
+        assignment = COVERAGE_ASSIGNMENT
+        workflow = '''\
+      - name: go mod tidy produces no diff
+      - name: "test: npm wrapper cache logic"
+      - name: go test ./internal/agent/ split into sequential batches
+'''
+        p = run_coverage(COVERAGE_TOML, workflow, assignment)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("test: a", p.stderr)
+        self.assertIn("has no active workflow step", p.stderr)
 
     def test_coverage_requires_workflow_input(self):
         p = run_coverage(COVERAGE_TOML, None, {"shards": {}})

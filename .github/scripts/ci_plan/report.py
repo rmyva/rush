@@ -32,7 +32,7 @@ def plan_json(p: Plan) -> str:
 
 def summary_md(p: Plan) -> str:
     lines: list[str] = []
-    lines.append("# CI plan (shadow mode — nothing runs)\n")
+    lines.append("# CI plan")
     lines.append(f"- mode: **{p.mode}**")
     lines.append(f"- base: `{p.base}`")
     lines.append(f"- head: `{p.head}`")
@@ -73,9 +73,7 @@ def summary_md(p: Plan) -> str:
     if len(highlights) > 40:
         lines.append(f"- …and {len(highlights) - 40} more")
     lines.append("")
-    lines.append(
-        "## Not run (unselected package counts)"
-    )
+    lines.append("## Unselected package counts")
     for os_name in ("linux", "darwin", "windows"):
         n = sum(1 for e in p.not_run if e["os"] == os_name and e["reason"] == "not selected")
         lines.append(f"- {os_name}: {n} package(s) not selected")

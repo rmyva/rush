@@ -26,6 +26,12 @@ native_required_prefixes = [
   "npm/",
 ]
 
+# Changes matching these glob patterns promote selector output to full validation.
+selector_full_patterns = [
+  "internal/agent/**/*_windows.go",
+  "internal/agent/**/*_windows_test.go",
+]
+
 # Design section 2 (core blanket rule): production (non-test-only) changes
 # under these prefixes force full Ubuntu.
 core_prefixes = [

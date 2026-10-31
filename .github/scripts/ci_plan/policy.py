@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import fnmatch
+import re
 import tomllib
 from dataclasses import dataclass, field
 
@@ -20,6 +20,7 @@ class NonGoMapping:
 @dataclass
 class Policy:
     native_required_prefixes: list[str] = field(default_factory=list)
+    selector_full_patterns: list[str] = field(default_factory=list)
     core_prefixes: list[str] = field(default_factory=list)
     race_roots: list[str] = field(default_factory=list)
     fanout_max_packages: int = 25
@@ -50,6 +51,7 @@ def load_policy(path: str) -> Policy:
     try:
         return Policy(
             native_required_prefixes=list(raw["native_required_prefixes"]),
+            selector_full_patterns=list(raw.get("selector_full_patterns", [])),
             core_prefixes=list(raw["core_prefixes"]),
             race_roots=list(raw["race_roots"]),
             fanout_max_packages=int(raw.get("fanout_max_packages", 25)),
@@ -86,21 +88,29 @@ def under_prefix(path: str, prefixes: list[str]) -> str | None:
 
 
 def glob_match(path: str, pattern: str) -> bool:
-    """fnmatch-style match where `**` crosses directory levels."""
+    """Match repository paths with `*` confined to a segment and `**` recursive."""
     norm = path.replace("\\", "/")
     pat = pattern.replace("\\", "/")
-    if "**" not in pat:
-        return fnmatch.fnmatchcase(norm, pat)
-    head, _, tail = pat.partition("**")
-    if tail.startswith("/"):
-        tail = tail[1:]
-        # '**/rest' matches 'rest' at any depth, including zero.
-        for i, _ in enumerate(norm + "/"):
-            if fnmatch.fnmatchcase(norm[i:], tail):
-                return True
-        return False
-    # '**' at the end: prefix must match.
-    return norm.startswith(head.rstrip("*")) if head.endswith("/") else norm.startswith(head)
+    pieces: list[str] = ["^"]
+    i = 0
+    while i < len(pat):
+        if pat.startswith("**/", i):
+            pieces.append("(?:.*/)?")
+            i += 3
+        elif pat.startswith("**", i):
+            pieces.append(".*")
+            i += 2
+        elif pat[i] == "*":
+            pieces.append("[^/]*")
+            i += 1
+        elif pat[i] == "?":
+            pieces.append("[^/]")
+            i += 1
+        else:
+            pieces.append(re.escape(pat[i]))
+            i += 1
+    pieces.append("$")
+    return bool(re.match("".join(pieces), norm))
 
 
 def map_non_go(path: str, mappings: list[NonGoMapping]) -> list[str]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import subprocess
 from dataclasses import dataclass, field
 
@@ -116,8 +117,14 @@ def parse_stream(text: str, os_name: str) -> Graph:
         for key in ("EmbedFiles", "TestEmbedFiles", "XTestEmbedFiles"):
             for f in obj.get(key) or []:
                 f = f.replace("\\", "/")
-                if f.startswith(rdir_prefix) or (rdir == "" and "/" not in f):
-                    embeds.add(f)
+                if f.startswith("./"):
+                    f = f[2:]
+                f = posixpath.normpath(f)
+                # go list reports embed files relative to the package directory.
+                # Normalize to repo-root-relative paths for changed-file lookup.
+                if rdir:
+                    f = rdir_prefix + f
+                embeds.add(f)
         pkg = graph.packages.get(owner)
         if pkg is None:
             pkg = Package(owner=owner, dir=rdir)

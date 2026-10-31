@@ -261,6 +261,19 @@ def plan(
             "always-run guard files changed: " + ", ".join(sorted(set(guard_hits))[:10])
         )
 
+    # Selector policy can explicitly promote matching changes to full mode.
+    selector_full_hits = sorted({
+        path
+        for ch in repo.changes
+        for path in ([ch.path, ch.old_path] if ch.old_path else [ch.path])
+        if any(pol.glob_match(path, pattern) for pattern in polobj.selector_full_patterns)
+    })
+    if selector_full_hits:
+        p.fallbacks.append(
+            "selector full patterns changed: " + ", ".join(selector_full_hits[:10])
+        )
+
+    # Core prefix production change -> full fallback
     # Core prefix blanket rule (production only).
     core_hits = []
     for d, ch in owners.items():

@@ -71,6 +71,20 @@ class GoListTests(unittest.TestCase):
         self.assertIn(MODULE + "/internal/shell", g.reverse)
         self.assertEqual(g.reverse[MODULE + "/internal/shell"], {MODULE})
 
+    def test_embed_files_normalize_package_relative_and_root_paths(self):
+        g = golist.parse_stream(
+            stream(
+                _p(MODULE + "/internal/skills", embeds=["templates/prompt.md", "internal/skills/assets/icon.svg", "./nested/./diagram.svg"]),
+                _p(MODULE, embeds=["web/index.html"]),
+            ),
+            "linux",
+        )
+        self.assertEqual(
+            g.packages[MODULE + "/internal/skills"].embeds,
+            {"internal/skills/templates/prompt.md", "internal/skills/internal/skills/assets/icon.svg", "internal/skills/nested/diagram.svg"},
+        )
+        self.assertEqual(g.packages[MODULE].embeds, {"web/index.html"})
+
     def test_no_main_module_raises(self):
         foreign = "github.com/example/dep"
         with self.assertRaises(golist.GraphError):
@@ -99,10 +113,18 @@ class PolicyTests(unittest.TestCase):
         self.assertIn("internal/agent/notify/", self.pol.native_required_prefixes)
         self.assertIn("cmd/tasklab", self.pol.race_roots)
 
+    def test_glob_match_keeps_single_star_within_path_segment(self):
+        self.assertTrue(pol.glob_match("internal/agent/templates/a.md", "internal/agent/templates/*.md"))
+        self.assertFalse(pol.glob_match("internal/agent/templates/nested/a.md", "internal/agent/templates/*.md"))
+        self.assertTrue(pol.glob_match("internal/skills/nested/a.md", "internal/skills/**/*.md"))
+        self.assertTrue(pol.glob_match("internal/skills/a.md", "internal/skills/**/*.md"))
+        self.assertFalse(pol.glob_match("docs/example.txt", "internal/skills/**/*"))
+
     def test_prefix(self):
         self.assertTrue(pol.under_prefix("internal/db/x.sql", ["internal/db/"]))
         self.assertTrue(pol.under_prefix("internal/csync/a.go", ["internal/csync/"]))
         self.assertFalse(pol.under_prefix("internal/dbx/a.go", ["internal/db/"]))
+        self.assertFalse(pol.under_prefix("outside/internal/db/x.sql", ["internal/db/"]))
 
 
 class SelectionTests(unittest.TestCase):
@@ -124,6 +146,18 @@ class SelectionTests(unittest.TestCase):
             os_name: golist.parse_stream(stream(*objs), os_name)
             for os_name in golist.TARGET_OSES
         }
+
+    def test_report_heading_identifies_active_ci_plan(self):
+        from ci_plan import report
+        p = selector.Plan()
+        p.selected = {os_name: [] for os_name in golist.TARGET_OSES}
+        p.native_required = {"required": False, "reasons": []}
+        md = report.summary_md(p)
+        self.assertEqual("# CI plan", md.splitlines()[0])
+        self.assertNotIn("shadow mode", md)
+        self.assertNotIn("nothing runs", md)
+        self.assertIn("## Unselected package counts", md)
+        self.assertNotIn("Not run (unselected", md)
 
     def test_test_only_change_selects_owner_only(self):
         class R:
@@ -259,6 +293,35 @@ class SelectionTests(unittest.TestCase):
         windows = [e.package for e in p.selected["windows"]]
         self.assertIn(MODULE + "/internal/app", darwin)
         self.assertIn(MODULE + "/internal/app", windows)
+
+    def test_windows_file_patterns_promote_to_full(self):
+        self.pol.selector_full_patterns = [
+            "internal/agent/**/*_windows.go",
+            "internal/agent/**/*_windows_test.go",
+        ]
+
+        def plan_for(path):
+            class R:
+                base = "b"
+                head = "h"
+                merge_base = "b"
+                base_tree_files = []
+                changes = [type("C", (), {"status": "M", "path": path, "old_path": None})()]
+
+            return selector.plan(".", R(), self.graphs, self.pol)
+
+        for path in (
+            "internal/agent/platform_windows.go",
+            "internal/agent/platform_windows_test.go",
+        ):
+            with self.subTest(path=path):
+                p = plan_for(path)
+                self.assertEqual(p.mode, "full")
+                self.assertTrue(any("selector full patterns" in f for f in p.fallbacks))
+
+        # The linux path belongs to a package present in the fixture graph, so
+        # this checks the suffix pattern rather than an unknown-owner fallback.
+        self.assertNotEqual(plan_for("internal/ui/platform_linux.go").mode, "full")
 
     def test_always_run_guard_change_forces_full(self):
         self.pol.always_run = [".githooks/"]

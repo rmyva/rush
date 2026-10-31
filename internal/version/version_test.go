@@ -15,6 +15,28 @@ func TestVersionLine(t *testing.T) {
 	require.False(t, strings.HasPrefix(VersionLine(), "v"), "VersionLine must not carry a \"v\" prefix")
 }
 
+func TestInjectedReleaseVersion(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "0.2.0-alpha.1", injectedReleaseVersion("v0.2.0-alpha.1"))
+	require.Empty(t, injectedReleaseVersion("devel"))
+	require.Empty(t, injectedReleaseVersion("abc123-0.2.0-alpha.1"))
+}
+
+func TestVersionLineUsesInjectedReleaseVersion(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "release 0.2.0-alpha.1 (c34a7334)", versionLine("v0.2.0-alpha.1", "c34a7334aabbccdd", ""))
+}
+
+func TestVersionLineReleaseMarkerDistinguishesFallback(t *testing.T) {
+	t.Parallel()
+	expected := "release " + forkBaseVersion
+	injected := versionLine("v"+forkBaseVersion, "", "")
+	devel := versionLine("devel", "", "")
+	require.Equal(t, expected, injected)
+	require.Equal(t, forkBaseVersion, devel)
+	require.NotEqual(t, injected, devel)
+}
+
 // TestBuildProvenanceSuffix pins the provenance tail appended to VersionLine.
 // It exists because the release-line part alone ("0.2.0-alpha.1") is identical
 // for every build of that line, so a deployed binary carried no evidence of
@@ -48,6 +70,12 @@ func TestBuildProvenanceSuffix(t *testing.T) {
 			commit:    "abc123",
 			buildTime: "",
 			want:      " (abc123)",
+		},
+		{
+			name:      "full dirty hash retains marker after truncation",
+			commit:    "0123456789abcdef0123456789abcdef01234567-dirty",
+			buildTime: "",
+			want:      " (01234567-dirty)",
 		},
 		{
 			name:      "build time only",

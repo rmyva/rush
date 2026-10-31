@@ -47,7 +47,31 @@ jobs:
     env:
       SCOPE: "@phpcraftdream"
     steps:
+      - name: Validate requested release tag
+        id: ver
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$REF_NAME"
+          fi
+          # Accept only an npm-v semver tag before using it as a checkout ref.
+          if ! printf '%s' "$TAG" | grep -Eq '^npm-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag '$TAG' is not a valid npm-v<semver> tag"; exit 1
+          fi
+          VERSION="${TAG#npm-v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "go_version=v$VERSION" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.ver.outputs.tag }}
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -81,47 +105,18 @@ jobs:
             exit 1
           fi
 
-      - name: Resolve version and tag
-        id: ver
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            TAG="$INPUT_TAG"
-          else
-            TAG="$GITHUB_REF_NAME"
-          fi
-          # reject anything but a clean "npm-v<semver>" tag before it reaches later shells
-          if ! printf '%s' "$TAG" | grep -Eq '^npm-v[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$'; then
-            echo "::error::tag '$TAG' is not a valid npm-v<semver> tag"; exit 1
-          fi
-          VERSION="${TAG#npm-v}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          # Clean semver-with-v-prefix for the Go binary's embedded version
-          # (internal/version.Version) — the npm-v tag prefix is a repo/CI
-          # convention, not part of the version the binary or npm package
-          # should ever display.
-          echo "go_version=v$VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Build binaries and assemble npm packages
         env:
           GO_VERSION_STRING: ${{ steps.ver.outputs.go_version }}
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          # Also stamp commit + build time so `rush --version` proves which
-          # source tree a published binary came from (VersionLine's
-          # provenance suffix, internal/version/version.go). -trimpath below
-          # strips the VCS metadata the toolchain would otherwise embed, so
-          # both are injected explicitly rather than relying on
-          # debug.ReadBuildInfo. GITHUB_SHA is always the tag's commit here —
-          # this job only runs from a tag push or an explicit dispatch against
-          # one, never against a moving branch ref.
-          BUILD_COMMIT="${GITHUB_SHA:0:8}"
+          # The checkout ref is authoritative on dispatch too: github.sha may be
+          # the dispatching branch commit rather than the requested release tag.
+          BUILD_COMMIT="$(git rev-parse HEAD)"
+          BUILD_COMMIT="${BUILD_COMMIT:0:8}"
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          LDFLAGS="-s -w -X github.com/PHPCraftdream/rush/internal/version.Version=${GO_VERSION_STRING} -X github.com/PHPCraftdream/rush/internal/version.Commit=${BUILD_COMMIT} -X github.com/PHPCraftdream/rush/internal/version.BuildTime=${BUILD_TIME}"
+          LDFLAGS="-s -w -X github.com/PHPCraftdream/rush/internal/version.Version=${GO_VERSION_STRING} -X github.com/PHPCraftdream/rush/internal/version.Commit=${BUILD_COMMIT} -X github.com/PHPCraftdream/rush/internal/version.BuildID=${BUILD_COMMIT} -X github.com/PHPCraftdream/rush/internal/version.BuildTime=${BUILD_TIME}"
           # target triples: <node_os> <node_arch> <GOOS> <GOARCH> <bin>
           TARGETS="
           linux x64   linux   amd64 rush
@@ -193,12 +188,9 @@ jobs:
         # before `npm publish` ever runs. The linux/x64 package is runnable on
         # this Actions runner; the same source and LDFLAGS are used for every
         # cross-compiled package.
-        #
-        # `rush --version` prints version.VersionLine() (e.g.
-        # "0.2.0-alpha.1 (c34a7334, built ...)" — forkBaseVersion plus a
-        # provenance suffix, no "v" prefix), NOT the raw ldflags-injected
-        # version.Version. So EXPECTED must be the bare numeric tag
-        # (steps.ver.outputs.version), not go_version.
+        # `rush --version` marks injected release versions explicitly, then
+        # prints the version without its Go `v` prefix. The marker prevents a
+        # matching development fallback from satisfying this guard.
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
@@ -223,23 +215,22 @@ jobs:
             exit 1
           fi
           echo "linux/amd64 --version: ${OUT}"
-          # Require EXPECTED to appear as a whole token: split the --version
-          # output on whitespace and punctuation and compare each token for
-          # equality. This rejects v0.1.1 inside v0.1.10, and v0.1.0 inside
-          # v0.1.0-rc1 / v0.1.0+dirty, which a substring `grep -F` check would
-          # have accepted. set -f disables globbing so a token can't be
-          # expanded as a pathname.
+          # Require the expected version immediately after the release marker,
+          # as distinct tokens. This rejects version-prefix matches and fallback
+          # output even when its version equals the tag. set -f disables globbing.
           matched=0
+          previous=""
           set -f
           for tok in $(printf '%s' "$OUT" | tr '()[],;:@' ' '); do
-            if [ "$tok" = "$EXPECTED" ]; then
+            if [ "$previous" = "release" ] && [ "$tok" = "$EXPECTED" ]; then
               matched=1
               break
             fi
+            previous="$tok"
           done
           set +f
           if [ "$matched" -ne 1 ]; then
-            echo "::error::${BIN_PATH} --version did not report ${EXPECTED} as a distinct version token"
+            echo "::error::${BIN_PATH} --version did not report release ${EXPECTED} as a distinct version token"
             exit 1
           fi
           echo "Binary version verified: ${EXPECTED}"
@@ -257,16 +248,14 @@ jobs:
           DRY_RUN: ${{ github.event_name != 'push' }}
         run: |
           set -euo pipefail
-          # npm defaults every `npm publish` to the "latest" dist-tag
-          # regardless of whether the version string carries a semver
-          # prerelease identifier — publishing e.g. 0.2.0-alpha.1 without an
-          # explicit --tag would make that alpha the version everyone gets
-          # from a bare `npm install @phpcraftdream/rush`. Derive the
-          # dist-tag from the version's prerelease identifier instead
-          # (0.2.0-alpha.1 -> alpha, 0.2.0-rc.1 -> rc), so only a clean
-          # X.Y.Z release ever lands on "latest".
-          if printf '%s' "$VERSION" | grep -Eq -- '-[A-Za-z]'; then
-            PUBLISH_TAG="$(printf '%s' "$VERSION" | sed -E 's/^[0-9]+\.[0-9]+\.[0-9]+-([A-Za-z]+).*/\1/')"
+          # A prerelease is anything after the first hyphen, including numeric
+          # identifiers (for example 1.2.3-1). Numeric-only identifiers use
+          # the generic prerelease channel, never latest.
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-([0-9A-Za-z-]+)([.+]|$) ]]; then
+            PUBLISH_TAG="${BASH_REMATCH[1]}"
+            if [[ "$PUBLISH_TAG" =~ ^[0-9]+$ ]]; then
+              PUBLISH_TAG="prerelease"
+            fi
           else
             PUBLISH_TAG="latest"
           fi
@@ -282,14 +271,28 @@ jobs:
             echo "::error::NPM_TOKEN is not set. This is a real tag push (${GITHUB_REF_NAME:-unknown}) — add the secret and re-run, or delete/re-push the tag once it is configured." >&2
             exit 1
           fi
-          # platform packages first, meta package last (so its optional deps exist).
-          # The leading "./" is required: without it, npm treats a bare
-          # "staging/rush-..." argument as a <githubname>/<githubrepo>
-          # install-style specifier (it tries `git ls-remote` on it) instead
-          # of a local folder to publish.
-          for d in staging/rush-*; do
+          # Platform packages first, meta package last (so optional deps exist).
+          # Lookup each package immediately before publishing: a previous
+          # partial run may already have published any subset of these.
+          for d in staging/rush-* staging/rush; do
+            PACKAGE_NAME="$(node -e 'console.log(require("./" + process.argv[1] + "/package.json").name)' "$d")"
+            PACKAGE="${PACKAGE_NAME}@${VERSION}"
+            if npm view "$PACKAGE" version --json > "$RUNNER_TEMP/npm-view.out" 2> "$RUNNER_TEMP/npm-view.err"; then
+              if [ "${DRY_RUN}" = "true" ]; then
+                echo "Dry-run packaging already-published ${PACKAGE}"
+              else
+                echo "Skipping already-published ${PACKAGE}"
+                continue
+              fi
+            else
+              # Only an explicit registry 404 means absent. Auth, transport,
+              # rate-limit, and server errors must fail closed.
+              if ! { cat "$RUNNER_TEMP/npm-view.out"; cat "$RUNNER_TEMP/npm-view.err"; } | grep -Eq 'E404|404 Not Found|is not in this registry'; then
+                echo "::error::npm registry lookup failed for ${PACKAGE}, not a not-found response" >&2
+                cat "$RUNNER_TEMP/npm-view.err" >&2
+                exit 1
+              fi
+            fi
             echo "→ npm publish $d"
             npm publish "./$d" $FLAGS
           done
-          echo "→ npm publish staging/rush (meta)"
-          npm publish "./staging/rush" $FLAGS
