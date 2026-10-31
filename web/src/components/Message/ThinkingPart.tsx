@@ -37,9 +37,9 @@ export const ThinkingPart = memo(function ThinkingPart({ thinking, messageID, pa
   }, [open, collapse]);
 
   const handleSave = useCallback((text: string) => {
-    if (text && text !== thinking) updateMessageThinking(messageID, text);
+    if (text && text !== thinking) updateMessageThinking(messageID, text, partIndex);
     setEditing(false);
-  }, [thinking, messageID]);
+  }, [thinking, messageID, partIndex]);
 
   const handleConfirmDelete = useCallback(() => {
     deleteMessagePart(messageID, partIndex);

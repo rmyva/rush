@@ -28,8 +28,6 @@ import {
   $recentWorkerModels,
   $recentReviewerModels,
   trackModelUsage,
-  dequeueAllMessages,
-  enqueueMessage,
   applyTheme,
   setSkills,
   setSummarizeQueued,
@@ -41,9 +39,11 @@ import {
   trackMessageParts,
 } from "./store";
 import { applyLiveWorkSnapshot, sendGetSessionLiveWork, isLiveWorkRequestID, applyWakeSchedulesSnapshot, sendGetSessionWakeSchedules, isWakeSchedulesGetRequestID, isWakeSchedulesCancelRequestID, $wakeScheduleCancelError } from "./store_livework";
+import { flushQueuedMessagesOnIdle } from "./store_commands";
 import { applyBatchWorkSnapshot } from "./batchWork";
 import type { WSMessage, Session, Message, ConfigPayload, MCPState, AgentBusyPayload, SkillsSnapshot, SummarizeQueuedPayload, SessionLiveWorkPayload, SessionWakeSchedulesPayload, BatchWorkSnapshot } from "./types";
 import { isKeepAliveRunning, startKeepAlive, stopKeepAlive, installKeepAliveAutoResume } from "./keepAlive";
+import { reloadReconnectTranscript } from "./reconnectTranscript";
 import { installSitterAutoRestore } from "./sitter";
 
 function getIDFromHash(): string | null {
@@ -73,7 +73,7 @@ export function useWS() {
     // One-shot per session: re-resume the AudioContext when the tab is
     // foregrounded after a long sleep. The actual start/stop is gated on
     // the server-side preference (see the `config` event handler below).
-    installKeepAliveAutoResume();
+    const cleanupKeepAliveAutoResume = installKeepAliveAutoResume();
     // Re-arm the sitter loop if the operator had it on before reload.
     // First tick happens after the saved interval — no risk of a flurry
     // of resume messages on every reload.
@@ -131,6 +131,7 @@ export function useWS() {
         if (localTheme) {
           sendReconnectHousekeeping("set_theme", { theme: localTheme });
         }
+        reloadReconnectTranscript($activeSessionID.get(), sendLoadMessages);
         // Live-work snapshot (task #1059): a reconnect can have missed
         // pushes for whatever session is active, so re-request it fresh --
         // mirrors the OwnedExternal messages_list refresh below.
@@ -419,29 +420,7 @@ export function useWS() {
         // single flushed send, in queue order — mirroring how the texts are
         // joined with blank lines.
         if (!p.Busy) {
-          const flushed = dequeueAllMessages(p.SessionID);
-          if (flushed) {
-            const payload: Record<string, unknown> = {
-              sessionID: p.SessionID,
-              content: flushed.content,
-            };
-            if (flushed.attachments.length > 0) {
-              payload.attachments = flushed.attachments;
-            }
-            // sendQueued, never a bare send (task #726): the browser can
-            // dispatch this final agent_busy=false frame while the socket
-            // has already left OPEN (readyState flips before the close
-            // event fires), so send() can return false here even though
-            // the event arrived. A bare send would drop the just-drained
-            // queue with no recovery path; parking the frame in the
-            // offline outbox delivers it on the next reconnect instead.
-            // The outbox-full fallback (100 parked frames) puts the
-            // drained content back into the local queue so the reconnect
-            // reconcile in the _connected handler can retry it later.
-            if (!ws.sendQueued("send_message", payload)) {
-              enqueueMessage(p.SessionID, flushed.content, flushed.attachments);
-            }
-          }
+          flushQueuedMessagesOnIdle(p.SessionID, (payload) => ws.sendQueued("send_message", payload));
         }
       }),
 
@@ -465,7 +444,7 @@ export function useWS() {
       // pushed unsolicited or replying to get_session_wake_schedules /
       // cancel_wake_schedule -- keyed by its own sessionID field.
       ws.on("session_wake_schedules", (msg: WSMessage) => {
-        applyWakeSchedulesSnapshot(msg.payload as SessionWakeSchedulesPayload);
+        applyWakeSchedulesSnapshot(msg.payload as SessionWakeSchedulesPayload, msg.id);
       }),
 
       // Batch work (R15a): structured batch-node snapshots. Unconditional
@@ -560,6 +539,7 @@ export function useWS() {
       window.removeEventListener("hashchange", onHashChange);
       document.removeEventListener("visibilitychange", onVisibility);
       stopPolling();
+      cleanupKeepAliveAutoResume();
       offs.forEach((off) => off());
       ws.disconnect();
     };

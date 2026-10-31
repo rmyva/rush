@@ -1,5 +1,6 @@
 import { ws, wsRequest, WSRequestError } from "./ws";
-import { $messages, $summarizeQueued, $activeSessionID, $config, $sessions, $messageQueue, type WireAttachment, type QueuedMessage } from "./store";
+import { $messages, $summarizeQueued, $activeSessionID, $config, $sessions, $messageQueue, dequeueAllMessages, enqueueMessage, type WireAttachment, type QueuedMessage } from "./store";
+import { sendQueuedItem, flushQueueOnIdle } from "./queueOnIdle";
 import { logClientEvent } from "./telemetry";
 
 // Outbound commands: thin wrappers over the WebSocket protocol. Each one is
@@ -35,8 +36,8 @@ export function updateMessageContent(messageID: string, content: string) {
   ws.send("update_message_content", { messageID, content });
 }
 
-export function updateMessageThinking(messageID: string, thinking: string) {
-  ws.send("update_message_thinking", { messageID, thinking });
+export function updateMessageThinking(messageID: string, thinking: string, partIndex?: number) {
+  ws.send("update_message_thinking", { messageID, thinking, partIndex });
 }
 
 export function summarizeSession(sessionID: string) {
@@ -141,9 +142,15 @@ export function sendWithFastModel(
   ws.send("send_message", payload);
 }
 
-// ── Per-item queued-message actions (task #1057) ────────────────────────────
-//
-// "Send now" / "Interrupt & send" act on ONE queued message without waiting
+export function flushQueuedMessagesOnIdle(sessionID: string, send: (payload: Record<string, unknown>) => boolean): void {
+  flushQueueOnIdle(sessionID, {
+    dequeue: (id) => dequeueAllMessages(id),
+    send,
+    restore: (id, content, attachments) => enqueueMessage(id, content, attachments as WireAttachment[]),
+  });
+}
+
+// ── Queue flush used by agent_busy=false (task #1057) ───────────────────────
 // for the turn to end. Both share one atomicity contract: the message is
 // removed from $messageQueue SYNCHRONOUSLY, before the wsRequest round-trip
 // even starts. Store updates and WS event handling both run on the main
@@ -152,6 +159,7 @@ export function sendWithFastModel(
 // gets to run, the item is already gone -- it can never be flushed a second
 // time, no matter how the send and a busy-flip interleave. A failed request
 // restores the item to its original index via restoreQueuedMessage below.
+// Restored failed or ambiguous items must not be automatically retried.
 
 /** Removes one message from a session's queue and returns it together with
  * its original index, or undefined if it's no longer there (already sent/
@@ -171,12 +179,16 @@ function takeQueuedMessage(sessionID: string, id: string): { item: QueuedMessage
  * (clamped to the current length, in case the queue changed size while the
  * send was in flight) after a failed send, attaching the error so the
  * QueuedMessageItem UI can show it. */
-function restoreQueuedMessage(sessionID: string, item: QueuedMessage, index: number, error: string) {
+function restoreQueuedMessage(sessionID: string, item: QueuedMessage, index: number, error: string, state: "rejected" | "ambiguous") {
   const q = new Map($messageQueue.get());
   const msgs = [...(q.get(sessionID) ?? [])];
-  msgs.splice(Math.min(index, msgs.length), 0, { ...item, error });
+  msgs.splice(Math.min(index, msgs.length), 0, { ...item, error, failureState: state });
   q.set(sessionID, msgs);
   $messageQueue.set(q);
+}
+
+function failureState(err: unknown): "rejected" | "ambiguous" {
+  return err instanceof WSRequestError && err.ambiguous ? "ambiguous" : "rejected";
 }
 
 function queuedMessagePayload(sessionID: string, item: QueuedMessage): Record<string, unknown> {
@@ -216,13 +228,12 @@ function describeSendFailure(err: unknown): string {
  * the next step of the CURRENT turn without interrupting it. See the
  * atomicity contract above. */
 export async function sendQueuedMessageNow(sessionID: string, id: string): Promise<void> {
-  const taken = takeQueuedMessage(sessionID, id);
-  if (!taken) return;
-  try {
-    await wsRequest("inject_message", queuedMessagePayload(sessionID, taken.item), { timeoutMs: INJECT_MESSAGE_TIMEOUT_MS });
-  } catch (err) {
-    restoreQueuedMessage(sessionID, taken.item, taken.index, describeSendFailure(err));
-  }
+  return sendQueuedItem(sessionID, id, {
+    take: takeQueuedMessage,
+    request: (targetSessionID, item) => wsRequest("inject_message", queuedMessagePayload(targetSessionID, item), { timeoutMs: INJECT_MESSAGE_TIMEOUT_MS }),
+    restore: (targetSessionID, item, index, failure: { message: string; state: ReturnType<typeof failureState> }) => restoreQueuedMessage(targetSessionID, item, index, failure.message, failure.state),
+    describeFailure: (err) => ({ message: describeSendFailure(err), state: failureState(err) }),
+  });
 }
 
 /** Sends one queued message via interrupt_and_send: cancels the running
@@ -234,7 +245,7 @@ export async function interruptAndSendQueuedMessage(sessionID: string, id: strin
   try {
     await wsRequest("interrupt_and_send", queuedMessagePayload(sessionID, taken.item), { timeoutMs: INTERRUPT_AND_SEND_TIMEOUT_MS });
   } catch (err) {
-    restoreQueuedMessage(sessionID, taken.item, taken.index, describeSendFailure(err));
+    restoreQueuedMessage(sessionID, taken.item, taken.index, describeSendFailure(err), failureState(err));
   }
 }
 
@@ -252,6 +263,6 @@ export function sendQueuedMessageDirect(sessionID: string, id: string): void {
   const taken = takeQueuedMessage(sessionID, id);
   if (!taken) return;
   if (!ws.sendQueued("send_message", queuedMessagePayload(sessionID, taken.item))) {
-    restoreQueuedMessage(sessionID, taken.item, taken.index, "Not connected — message was not sent.");
+    restoreQueuedMessage(sessionID, taken.item, taken.index, "Not connected — message was not sent.", "rejected");
   }
 }

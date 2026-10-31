@@ -44,6 +44,7 @@ let source: AudioBufferSourceNode | null = null;
 let filter: BiquadFilterNode | null = null;
 let gainNode: GainNode | null = null;
 let running = false;
+let autoResumeListener: (() => void) | null = null;
 
 function buildNoiseBuffer(audio: AudioContext): AudioBuffer {
   const len = audio.sampleRate * NOISE_BUFFER_SECONDS;
@@ -101,12 +102,29 @@ export function stopKeepAlive(): void {
 
 // installKeepAliveAutoResume wires a visibilitychange listener that nudges
 // the AudioContext back to "running" if it was suspended in the
-// background. Call once at app bootstrap.
-export function installKeepAliveAutoResume(): void {
-  document.addEventListener("visibilitychange", () => {
+// background. Repeated calls are idempotent; cleanup removes the listener
+// and allows a later installation (e.g. after StrictMode effect replay).
+export function installKeepAliveAutoResume(): () => void {
+  if (autoResumeListener) return () => {};
+  const listener = () => {
     if (!running || !ctx) return;
     if (ctx.state === "suspended") {
       ctx.resume().catch(() => { /* noop */ });
     }
-  });
+  };
+  autoResumeListener = listener;
+  document.addEventListener("visibilitychange", listener);
+  return () => {
+    // A stale cleanup (or a cleanup for a duplicate installation) must not
+    // remove a listener installed by a later owner.
+    if (autoResumeListener !== listener) return;
+    document.removeEventListener("visibilitychange", listener);
+    autoResumeListener = null;
+  };
+}
+
+export function uninstallKeepAliveAutoResume(): void {
+  if (!autoResumeListener) return;
+  document.removeEventListener("visibilitychange", autoResumeListener);
+  autoResumeListener = null;
 }

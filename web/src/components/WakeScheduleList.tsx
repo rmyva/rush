@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { useStore } from "@nanostores/react";
 import type { WakeScheduleItem } from "../types";
-import { sendCancelWakeSchedule, $wakeScheduleCancelError } from "../store_livework";
+import { sendCancelWakeSchedule, $wakeScheduleCancelError, pickPendingWakeSchedule } from "../store_livework";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 function formatLocalTime(ms: number): string {
@@ -87,8 +87,7 @@ export function WakeScheduleList({ items, sessionID, emptyLabel }: {
   // as LiveWorkPanel's effectiveTab, deliberately NOT a synchronizing
   // effect): the dialog shows only while the pending row still exists, so
   // the snapshot that removes it closes the dialog with no extra state.
-  const effectivePending =
-    pending && items.some((i) => i.id === pending.id) ? pending : null;
+  const effectivePending = pickPendingWakeSchedule(items, pending);
 
   function confirmCancel() {
     if (!effectivePending) return;

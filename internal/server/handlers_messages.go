@@ -301,8 +301,24 @@ func handleUpdateMessageContent(ctx context.Context, a *appPkg.App, c *Client, m
 	c.reply(msg.ID, EventResponse, map[string]string{"status": "ok"}, "")
 }
 
+func updatedReasoningContent(rc message.ReasoningContent, thinking string) message.ReasoningContent {
+	return message.ReasoningContent{
+		Thinking:         thinking,
+		Signature:        rc.Signature,
+		ThoughtSignature: rc.ThoughtSignature,
+		ToolID:           rc.ToolID,
+		ResponsesData:    rc.ResponsesData,
+		StartedAt:        rc.StartedAt,
+		FinishedAt:       rc.FinishedAt,
+	}
+}
+
 func handleUpdateMessageThinking(ctx context.Context, a *appPkg.App, c *Client, msg WSMessage) {
-	var p UpdateMessageThinkingPayload
+	var p struct {
+		MessageID string `json:"messageID"`
+		Thinking  string `json:"thinking"`
+		PartIndex *int   `json:"partIndex,omitempty"`
+	}
 	if err := json.Unmarshal(msg.Payload, &p); err != nil {
 		c.reply(msg.ID, EventError, nil, "invalid payload")
 		return
@@ -313,19 +329,27 @@ func handleUpdateMessageThinking(ctx context.Context, a *appPkg.App, c *Client, 
 		return
 	}
 	found := false
-	for i, part := range m.Parts {
-		if rc, ok := part.(message.ReasoningContent); ok {
-			m.Parts[i] = message.ReasoningContent{
-				Thinking:         p.Thinking,
-				Signature:        rc.Signature,
-				ThoughtSignature: rc.ThoughtSignature,
-				ToolID:           rc.ToolID,
-				ResponsesData:    rc.ResponsesData,
-				StartedAt:        rc.StartedAt,
-				FinishedAt:       rc.FinishedAt,
+	if p.PartIndex != nil {
+		if *p.PartIndex < 0 || *p.PartIndex >= len(m.Parts) {
+			c.reply(msg.ID, EventError, nil, "part index out of range")
+			return
+		}
+		rc, ok := m.Parts[*p.PartIndex].(message.ReasoningContent)
+		if !ok {
+			c.reply(msg.ID, EventError, nil, "part type not editable")
+			return
+		}
+		m.Parts[*p.PartIndex] = updatedReasoningContent(rc, p.Thinking)
+		found = true
+	} else {
+		// Older clients omit PartIndex; preserve their historical behavior by
+		// updating the first reasoning part.
+		for i, part := range m.Parts {
+			if rc, ok := part.(message.ReasoningContent); ok {
+				m.Parts[i] = updatedReasoningContent(rc, p.Thinking)
+				found = true
+				break
 			}
-			found = true
-			break
 		}
 	}
 	if !found {

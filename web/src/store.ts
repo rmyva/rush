@@ -1,8 +1,9 @@
 import { atom, computed } from "nanostores";
-import type { Session, Message, ContentPart, ConfigPayload, MCPState, Todo, SkillInfo } from "./types";
+import type { Session, Message, ConfigPayload, MCPState, Todo, SkillInfo } from "./types";
 import { isAsyncCompletionNotice, indexAsyncJobCompletions } from "./asyncJobCompletion";
 import { buildMyPrompts, completionStatuses, mergeCompletionIndex } from "./completionIndex";
 import { $batchWorkBySession } from "./batchWork";
+import { drainSendableQueue } from "./queueOnIdle";
 
 // ── Connection state ─────────────────────────────────────────────────────────
 export const $connected = atom(false);
@@ -208,111 +209,8 @@ export function setMessages(msgs: Message[]) {
   $messages.set(msgs);
 }
 
-// totalThinking returns the concatenated thinking text across every
-// `thinking` part in a message. Reasoning can span multiple parts (one
-// per reasoning round in a multi-step turn), so we sum them all rather
-// than reading only Parts[0].
-function totalThinking(parts: ContentPart[]): string {
-  return partsOfKind(parts, "thinking")
-    .map((p) => p.Thinking)
-    .join("");
-}
-
-// totalText returns the concatenated answer text across every `text`
-// part. An assistant turn can carry multiple text parts (text between
-// tool calls, a closing summary, …); sum them so the length comparison
-// reflects everything the user was shown.
-function totalText(parts: ContentPart[]): string {
-  return partsOfKind(parts, "text")
-    .map((p) => p.Text)
-    .join("");
-}
-
-// partsOfKind returns the parts of a single accumulating kind, preserving
-// their in-message order. Used for both `thinking` and `text`.
-function partsOfKind<T extends ContentPart["type"]>(
-  parts: ContentPart[],
-  kind: T,
-): Extract<ContentPart, { type: T }>[] {
-  return parts.filter(
-    (p): p is Extract<ContentPart, { type: T }> => p.type === kind,
-  );
-}
-
-// mergePreserveContent guards already-shown assistant content — BOTH the
-// reasoning (inside the thinking spoiler) AND the answer text (rendered
-// outside it) — against a wholesale-replace that would shrink or erase
-// either one. This guard applies ONLY when the incoming message is NOT
-// terminally finished; terminal updates are taken verbatim.
-//
-// The backend streams an assistant message by APPENDING reasoning/text to
-// one in-memory message and broadcasting it via `message_updated`. Most
-// deltas only grow content, but occasionally a stale snapshot arrives
-// (the backend ticker re-broadcasts a moment before the latest delta
-// lands) whose thinking OR text is shorter than what the user was just
-// shown. Replacing the message wholesale in that case makes the content
-// the operator was watching vanish mid-turn — the answer text blinks out
-// the instant the thinking spoiler updates again.
-//
-// Rule, per accumulating kind (applies only to non-terminal incoming):
-//   - THINKING: if incoming total thinking is shorter than existing →
-//     keep existing thinking part(s); else use incoming's.
-//   - TEXT: if incoming total text is shorter than existing → keep
-//     existing text part(s); else use incoming's.
-//   - TOOL / FINISH / OTHER (tool_call, tool_result, finish, anything
-//     else): ALWAYS take from incoming — these advance legitimately.
-//
-// Rebuilt render order is the natural assistant order: thinking → text →
-// tools/finish/other (in their incoming order). If NEITHER kind
-// regressed (the normal growth case), the incoming message is returned
-// verbatim — the cheapest path, and it preserves any incoming ordering
-// nuance.
-export function mergePreserveContent(existing: Message, incoming: Message): Message {
-  // A terminally finished row is by definition not a mid-stream snapshot:
-  // the server refuses every part-level edit/delete on a row that is not
-  // terminally finished (internal/server/handlers_messages.go
-  // updateMessageAndVerify), so a terminal broadcast that SHRINKS thinking
-  // or text can only be a deliberate operator edit/delete that already
-  // committed server-side. Take it verbatim — running the length guard
-  // here would resurrect deleted parts and revert shortened edits, and the
-  // rebuilt [thinking…, text…, advancing…] order would desynchronise the
-  // client's Parts array from the DB's, mis-addressing every later
-  // partIndex. The guard below now only ever sees genuinely mid-stream
-  // (non-terminal) snapshots, which is exactly the stale re-broadcast
-  // case it was written for.
-  if (isTerminallyFinished(incoming.Parts)) {
-    return incoming;
-  }
-
-  const existingThinking = totalThinking(existing.Parts);
-  const incomingThinking = totalThinking(incoming.Parts);
-  const existingText = totalText(existing.Parts);
-  const incomingText = totalText(incoming.Parts);
-
-  const thinkingRegressed = incomingThinking.length < existingThinking.length;
-  const textRegressed = incomingText.length < existingText.length;
-
-  // Normal growth or no regression on either accumulating kind — take
-  // the update verbatim.
-  if (!thinkingRegressed && !textRegressed) {
-    return incoming;
-  }
-
-  // One or both kinds regressed: rebuild. Pick the longer side per kind
-  // (existing wins ties because it is what the user is currently seeing),
-  // then append all non-accumulating parts from incoming.
-  const thinkingParts = thinkingRegressed
-    ? partsOfKind(existing.Parts, "thinking")
-    : partsOfKind(incoming.Parts, "thinking");
-  const textParts = textRegressed
-    ? partsOfKind(existing.Parts, "text")
-    : partsOfKind(incoming.Parts, "text");
-  const advancingParts = incoming.Parts.filter(
-    (p) => p.type !== "thinking" && p.type !== "text",
-  );
-
-  return { ...incoming, Parts: [...thinkingParts, ...textParts, ...advancingParts] };
-}
+export { mergePreserveContent } from "./mergeMessage";
+import { mergePreserveContent } from "./mergeMessage";
 
 export function upsertMessage(msg: Message) {
   const list = $messages.get();
@@ -327,10 +225,6 @@ export function upsertMessage(msg: Message) {
       if (merged !== msg) {
         console.warn("[upsertMessage] content regression blocked", {
           id: msg.ID,
-          prevText: totalText(prev.Parts).length,
-          incomingText: totalText(msg.Parts).length,
-          prevThinking: totalThinking(prev.Parts).length,
-          incomingThinking: totalThinking(msg.Parts).length,
         });
       }
       next[idx] = merged;
@@ -567,7 +461,6 @@ export interface WireAttachment {
   data: string; // base64
 }
 import { logClientEvent } from "./telemetry";
-import { isTerminallyFinished } from "./components/Message/textParts";
 
 export function updateTodos(sessionID: string, todos: Todo[]) {
   // Optimistic local update
@@ -729,8 +622,9 @@ export interface QueuedMessage {
   // Attachments captured from the composer when this message was queued;
   // they ride on the single flushed send when the turn ends.
   attachments?: WireAttachment[];
-  // Set when a "send now" / "interrupt & send" attempt for this item
-  // (task #1057) failed and it was restored to the queue. Cleared on edit.
+  // Explicit failure classification keeps unsafe-to-resend messages out of
+  // automatic busy=false flushes. User actions can still take and retry them.
+  failureState?: "rejected" | "ambiguous";
   error?: string;
 }
 
@@ -757,18 +651,20 @@ export interface FlushedQueue {
   attachments: WireAttachment[];
 }
 
-// Drains the session's queue. Texts join with blank lines; every attachment
-// from every queued message is concatenated in queue order, so a multi-
-// message flush carries all of them on the single send.
+// Drains only messages that have not already failed a per-item send. Rejected
+// and ambiguous items remain queued for an explicit user retry, avoiding both
+// silent loss and accidental duplicates when an agent_busy=false event lands.
 export function dequeueAllMessages(sessionID: string): FlushedQueue | undefined {
   const q = new Map($messageQueue.get());
   const msgs = q.get(sessionID) ?? [];
   if (!msgs.length) return undefined;
-  q.delete(sessionID);
+  const { sendable, retained } = drainSendableQueue(msgs);
+  if (retained.length) q.set(sessionID, retained); else q.delete(sessionID);
   $messageQueue.set(q);
+  if (!sendable.length) return undefined;
   return {
-    content: msgs.map((m) => m.content).join("\n\n"),
-    attachments: msgs.flatMap((m) => m.attachments ?? []),
+    content: sendable.map((m) => m.content).join("\n\n"),
+    attachments: sendable.flatMap((m) => m.attachments ?? []),
   };
 }
 
@@ -839,7 +735,8 @@ export function removeQueuedMessage(sessionID: string, id: string) {
 
 export function updateQueuedMessage(sessionID: string, id: string, content: string) {
   const q = new Map($messageQueue.get());
-  // Editing supersedes a previous failed-send error.
+  // Editing clears the displayed error, but preserves failureState so the
+  // message still requires an explicit send/retry action.
   const msgs = (q.get(sessionID) ?? []).map((m) => m.id === id ? { ...m, content, error: undefined } : m);
   q.set(sessionID, msgs);
   $messageQueue.set(q);

@@ -1,6 +1,7 @@
 import { atom } from "nanostores";
 import { ws } from "./ws";
-import type { LiveWorkItem, SessionLiveWorkPayload } from "./types";
+import type { LiveWorkItem, SessionLiveWorkPayload, SessionWakeSchedulesPayload, WakeScheduleItem } from "./types";
+import { isStaleWakeSnapshot, mergeWakeSnapshot, pickPendingWake } from "./wakeSnapshot";
 
 // Live-work panel store slice (task #1059), split out of store.ts to keep
 // it under the 1000-line limit. Server-side emitter lands in #1058 -- this
@@ -103,8 +104,6 @@ export function requestExpandToolCall(toolCallID: string) {
 // pass-the-map-explicitly rule as pickLiveWork above: the React Compiler
 // can't see through atom reads inside plain functions.
 
-import type { SessionWakeSchedulesPayload, WakeScheduleItem } from "./types";
-
 const EMPTY_SCHEDULES: WakeScheduleItem[] = [];
 
 export const $wakeSchedulesBySession = atom<Map<string, WakeScheduleItem[]>>(new Map());
@@ -116,27 +115,48 @@ export function pickWakeSchedules(map: Map<string, WakeScheduleItem[]>, sessionI
 
 /** Applies a full session_wake_schedules snapshot -- always replaces, never
  * merges, per the wire contract. */
-export function applyWakeSchedulesSnapshot(payload: SessionWakeSchedulesPayload) {
-  const next = new Map($wakeSchedulesBySession.get());
-  next.set(payload.sessionID, payload.schedules ?? []);
-  $wakeSchedulesBySession.set(next);
+export function applyWakeSchedulesSnapshot(payload: SessionWakeSchedulesPayload, requestID?: string) {
+  if (isStaleWakeSchedulesSnapshot(payload.sessionID, requestID)) return;
+  $wakeSchedulesBySession.set(mergeWakeSnapshot($wakeSchedulesBySession.get(), payload));
 }
 
 const WAKE_SCHEDULES_GET_PREFIX = "wakesched-get-";
 const WAKE_SCHEDULES_CANCEL_PREFIX = "wakesched-cancel-";
 
+export function pickPendingWakeSchedule(items: WakeScheduleItem[], pending: WakeScheduleItem | null): WakeScheduleItem | null {
+  return pickPendingWake(items, pending);
+}
+
+const latestWakeSchedulesRequestBySession = new Map<string, string>();
+
+/** Records the newest snapshot request for a session. Kept through reply
+ * delivery so a late response cannot overwrite a newer snapshot. */
+export function trackWakeSchedulesRequest(sessionID: string, requestID: string) {
+  latestWakeSchedulesRequestBySession.set(sessionID, requestID);
+}
+
+/** True only for a tagged response superseded by a later wake-schedule
+ * request; untagged pushes and replies from older clients remain accepted. */
+export function isStaleWakeSchedulesSnapshot(sessionID: string | undefined, requestID: string | undefined): boolean {
+  return isStaleWakeSnapshot(latestWakeSchedulesRequestBySession, sessionID, requestID, (id) => isWakeSchedulesGetRequestID(id) || isWakeSchedulesCancelRequestID(id));
+}
+
 /** Requests a fresh wake-schedule snapshot for sessionID. Fire-and-forget:
  * the reply arrives as an ordinary session_wake_schedules push keyed by its
  * own SessionID field. */
 export function sendGetSessionWakeSchedules(sessionID: string) {
-  ws.send("get_session_wake_schedules", { sessionID }, WAKE_SCHEDULES_GET_PREFIX + crypto.randomUUID());
+  const id = WAKE_SCHEDULES_GET_PREFIX + crypto.randomUUID();
+  trackWakeSchedulesRequest(sessionID, id);
+  ws.send("get_session_wake_schedules", { sessionID }, id);
 }
 
 /** Cancels one of the session's own wake schedules. The server replies with
  * a fresh session_wake_schedules snapshot; an unknown/foreign scheduleID is
  * an explicit error reply (surfaced by the dialog's inline error). */
 export function sendCancelWakeSchedule(sessionID: string, scheduleID: string) {
-  ws.send("cancel_wake_schedule", { sessionID, scheduleID }, WAKE_SCHEDULES_CANCEL_PREFIX + crypto.randomUUID());
+  const id = WAKE_SCHEDULES_CANCEL_PREFIX + crypto.randomUUID();
+  trackWakeSchedulesRequest(sessionID, id);
+  ws.send("cancel_wake_schedule", { sessionID, scheduleID }, id);
 }
 
 /** True if id belongs to a wake-schedules GET request -- see
