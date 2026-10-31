@@ -84,6 +84,16 @@ func (ts *turnStream) handleStreamFailure(
 	nilAssistant := ts.currentAssistant == nil
 	ts.mu.Unlock()
 	if nilAssistant {
+		// A cancellation during PrepareStep can fail before fantasy has created
+		// currentAssistant. Recover the mailbox replacement before returning:
+		// otherwise Run's abandonment path treats its live waiter as an orphan
+		// and splitCallsWithoutWaiters resolves it as never run.
+		if isCancelErr {
+			if next, ok := ts.a.getMailbox(ts.call.SessionID).drainAfterCancel(); ok {
+				ts.cancel()
+				return result, next, true, nil
+			}
+		}
 		return result, SessionAgentCall{}, false, err
 	}
 	// All DB writes in the error path use a detached context. The outer
