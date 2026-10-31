@@ -43,19 +43,25 @@ func (s *service) SubtreeUpdatedAt(ctx context.Context, sessionID string) (int64
 	return updated, nil
 }
 
-// ResetCostBase — see Service.ResetCostBase. ONE column, ONE update, inside
-// the single-connection writer pool so a concurrent charge is fully before
-// or after it. cost_self is never touched: the reset cannot break the
-// monotonic ledger.
+const resetCostBaseSQL = `
+WITH RECURSIVE sub(node) AS (
+    SELECT id FROM sessions WHERE id = ?
+    UNION
+    SELECT child.id FROM sessions child JOIN sub ON child.cost_parent_id = sub.node
+)
+UPDATE sessions
+SET cost_base = (
+        SELECT CAST(COALESCE(SUM(n.cost_self), 0) AS REAL)
+        FROM sub JOIN sessions n ON n.id = sub.node
+    ),
+    updated_at = strftime('%s', 'now')
+WHERE id = ?
+`
+
+// ResetCostBase — see Service.ResetCostBase. ONE statement computes the
+// subtree snapshot and writes cost_base atomically; cost_self is untouched.
 func (s *service) ResetCostBase(ctx context.Context, sessionID string) error {
-	spent, err := s.q.GetSubtreeSpent(ctx, sessionID)
-	if err != nil {
-		return fmt.Errorf("read subtree spent: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET cost_base = ?, updated_at = strftime('%s', 'now') WHERE id = ?`,
-		spent, sessionID,
-	); err != nil {
+	if _, err := s.db.ExecContext(ctx, resetCostBaseSQL, sessionID, sessionID); err != nil {
 		return fmt.Errorf("freeze cost base: %w", err)
 	}
 	if sess, err := s.Get(ctx, sessionID); err == nil {
