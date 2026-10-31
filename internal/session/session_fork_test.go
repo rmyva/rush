@@ -12,6 +12,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestForkSessionTx_PreservesFinishedAt verifies completed assistant messages
+// retain their terminal timestamp when copied. Without it, SQL sees the forked
+// row as still streaming despite the copied Finish part.
+func TestForkSessionTx_PreservesFinishedAt(t *testing.T) {
+	t.Parallel()
+	limitParallel(t)
+	sqlDB, q := newTestDB(t)
+	svc := NewService(q, sqlDB)
+	ctx := t.Context()
+
+	src, err := svc.Create(ctx, "source")
+	require.NoError(t, err)
+	_, err = sqlDB.ExecContext(ctx,
+		`INSERT INTO messages (id, session_id, role, parts, created_at, updated_at, finished_at) VALUES (?, ?, 'assistant', ?, 100, 100, ?)`,
+		uuid.NewString(), src.ID, `[{"type":"finish","data":{"reason":"stop"}}]`, 123)
+	require.NoError(t, err)
+
+	fork, _, err := svc.(*service).ForkSessionTx(ctx, src.ID, ForkOptions{})
+	require.NoError(t, err)
+
+	var finishedAt sql.NullInt64
+	require.NoError(t, sqlDB.QueryRowContext(ctx,
+		`SELECT finished_at FROM messages WHERE session_id = ? AND role = 'assistant'`, fork.ID).Scan(&finishedAt))
+	require.True(t, finishedAt.Valid, "forked assistant should retain its terminal timestamp")
+	require.EqualValues(t, 123, finishedAt.Int64)
+}
+
 func countMsgsForSession(t *testing.T, ctx context.Context, sqlDB *sql.DB, sessionID string) int64 {
 	t.Helper()
 	var n int64

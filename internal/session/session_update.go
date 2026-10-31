@@ -326,8 +326,8 @@ func (s *service) afterEffortWrite(ctx context.Context, sessionID string, err er
 	return nil
 }
 
-// Rename updates only the title of a session without touching updated_at or
-// usage fields.
+// Rename updates only the title of a session and bumps updated_at without
+// changing usage fields.
 //
 // It publishes an UpdatedEvent like every other column-scoped update here.
 // That publish is what carries a generated session title to the browser:

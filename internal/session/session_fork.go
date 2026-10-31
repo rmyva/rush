@@ -215,6 +215,12 @@ func (s *service) ForkSessionTx(ctx context.Context, srcID string, o ForkOptions
 			return Session{}, 0, fmt.Errorf("copy message into fork: %w", err)
 		}
 		messageIDMap[m.ID] = copiedMessageID
+		// CreateMessage intentionally omits finished_at; preserve its exact
+		// nullable value so completed assistant messages remain deletable as
+		// terminal rows and unfinished messages remain streaming.
+		if _, err := tx.ExecContext(ctx, `UPDATE messages SET finished_at = ? WHERE id = ?`, m.FinishedAt, copiedMessageID); err != nil {
+			return Session{}, 0, fmt.Errorf("copy message finish time into fork: %w", err)
+		}
 		if m.Pinned != 0 {
 			if _, err := tx.ExecContext(ctx, `UPDATE messages SET pinned = ? WHERE id = ?`, m.Pinned, copiedMessageID); err != nil {
 				return Session{}, 0, fmt.Errorf("copy pinned state into fork: %w", err)

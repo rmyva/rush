@@ -176,12 +176,18 @@ func (q *Queries) ListFilesBySession(ctx context.Context, sessionID string) ([]F
 const listLatestSessionFiles = `-- name: ListLatestSessionFiles :many
 SELECT f.id, f.session_id, f.path, f.content, f.version, f.created_at, f.updated_at
 FROM files f
-INNER JOIN (
-    SELECT path, MAX(version) as max_version, MAX(created_at) as max_created_at
-    FROM files
-    GROUP BY path
-) latest ON f.path = latest.path AND f.version = latest.max_version AND f.created_at = latest.max_created_at
 WHERE f.session_id = ?
+  AND NOT EXISTS (
+      SELECT 1
+      FROM files newer
+      WHERE newer.session_id = f.session_id
+        AND newer.path = f.path
+        AND (
+            newer.version > f.version
+            OR (newer.version = f.version AND newer.created_at > f.created_at)
+            OR (newer.version = f.version AND newer.created_at = f.created_at AND newer.id > f.id)
+        )
+  )
 ORDER BY f.path
 `
 

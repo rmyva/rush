@@ -91,6 +91,10 @@ var (
 	// normal pathLock.mu-to-poolMu order. Registry reference updates never
 	// hold poolMu, and final path-lock decrements happen after path unlock.
 
+	// onReadDBOpen is a test seam for simulating a lazily opened reader
+	// that cannot establish its first connection. Nil outside tests.
+	onReadDBOpen func(dbPath string) (*sql.DB, error)
+
 	// onOpenNew runs after a cache miss, before the slow open+migrate
 	// work, for a database path not yet in the pool. Test seam only:
 	// lets tests pause one path mid-open to prove unrelated paths
@@ -353,9 +357,21 @@ func connect(ctx context.Context, dataDir string, migrationOpts ...MigrateOption
 	// the writer connection (readDB = conn), which is exactly today's
 	// behavior. A degraded-to-serialized read path is strictly better
 	// than refusing to start.
-	readConn, err := openReadDB(dbPath)
+	openReader := openReadDB
+	if onReadDBOpen != nil {
+		openReader = onReadDBOpen
+	}
+	readConn, err := openReader(dbPath)
+	if err == nil {
+		pingCtx, cancel := context.WithTimeout(ctx, time.Second)
+		err = readConn.PingContext(pingCtx)
+		cancel()
+		if err != nil {
+			_ = readConn.Close()
+		}
+	}
 	if err != nil {
-		slog.Warn("Failed to open read-only pool, reads will serialize with writes", "error", err)
+		slog.Warn("Failed to connect read-only pool, reads will serialize with writes", "error", err)
 		readConn = conn
 	}
 

@@ -26,6 +26,37 @@ func (r *recordingDBTX) QueryRowContext(ctx context.Context, query string, args 
 	return r.DBTX.QueryRowContext(ctx, query, args...)
 }
 
+func TestListLatestSessionFilesRanksWithinSessionAndPath(t *testing.T) {
+	ctx := context.Background()
+	database, err := sql.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+	_, err = database.ExecContext(ctx, `CREATE TABLE files (
+		id TEXT PRIMARY KEY, session_id TEXT NOT NULL, path TEXT NOT NULL,
+		content TEXT NOT NULL, version INTEGER NOT NULL, created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`)
+	require.NoError(t, err)
+	for _, file := range []struct {
+		id, sessionID, content string
+		version, createdAt     int64
+	}{
+		{id: "requested-v2", sessionID: "requested", content: "latest by version", version: 2, createdAt: 100},
+		{id: "requested-v1", sessionID: "requested", content: "max timestamp but older version", version: 1, createdAt: 200},
+		{id: "other-v3", sessionID: "other", content: "other session", version: 3, createdAt: 300},
+	} {
+		_, err := database.ExecContext(ctx, `INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			file.id, file.sessionID, "/shared", file.content, file.version, file.createdAt, file.createdAt)
+		require.NoError(t, err)
+	}
+
+	files, err := db.New(database).ListLatestSessionFiles(ctx, "requested")
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.Equal(t, "requested-v2", files[0].ID)
+	require.Equal(t, "latest by version", files[0].Content)
+}
+
 func TestCreateVersionUsesNextPathVersion(t *testing.T) {
 	ctx := context.Background()
 	database, err := sql.Open("sqlite", ":memory:")

@@ -165,8 +165,8 @@ func migrate(ctx context.Context, conn *sql.DB, dbPath string, fsys fs.FS, opts 
 		return &SchemaDivergedError{Unknown: unknown, Pending: pending}
 	case len(unknown) > 0:
 		// The database is ahead of this binary. Goose itself would ignore
-		// those rows (it only raises dbMax), so opening read-only is the
-		// safe, non-destructive reading of this state. This warn-only
+		// those rows (it only raises dbMax), so the writer may continue opening and
+		// writing without applying migrations. This warn-only
 		// "open without migrating" policy is NOT an old-binary fence: an
 		// older binary treats this binary's versions the same way, so a
 		// rolling upgrade is made safe by operational quiescence, not by

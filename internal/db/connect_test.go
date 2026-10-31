@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"math"
 	"sync"
 	"testing"
@@ -55,6 +57,36 @@ func TestRelease_NoopForUnknownDataDir(t *testing.T) {
 	t.Cleanup(ResetPool)
 
 	require.NoError(t, Release("/nonexistent/path"), "releasing unknown data dir should not error")
+}
+
+type failingReadPoolDriver struct{}
+
+func (failingReadPoolDriver) Open(string) (driver.Conn, error) {
+	return nil, errors.New("simulated reader connection failure")
+}
+
+func init() {
+	sql.Register("failing-read-pool-test", failingReadPoolDriver{})
+}
+
+func TestConnectRead_FallsBackWhenLazyPoolCannotConnect(t *testing.T) {
+	t.Cleanup(ResetPool)
+	originalOpenReadDB := onReadDBOpen
+	onReadDBOpen = func(string) (*sql.DB, error) {
+		return sql.Open("failing-read-pool-test", "")
+	}
+	t.Cleanup(func() { onReadDBOpen = originalOpenReadDB })
+
+	dataDir := t.TempDir()
+	ctx := context.Background()
+	writer, err := Connect(ctx, dataDir)
+	require.NoError(t, err)
+	defer Release(dataDir) //nolint:errcheck
+
+	reader, err := ConnectRead(ctx, dataDir)
+	require.NoError(t, err)
+	defer Release(dataDir) //nolint:errcheck
+	require.Same(t, writer, reader, "unconnectable lazy read pool must fall back to the writer")
 }
 
 // TestConnectRead_SeparateHandleSharesRefCount verifies the M-5 read/write
