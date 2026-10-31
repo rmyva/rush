@@ -10,6 +10,46 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStandaloneDetachClearsItsCommittedAdmission(t *testing.T) {
+	if current := currentOwner(); current != nil {
+		require.NoError(t, current.Close(context.Background()))
+	}
+	installed, err := Acquire()
+	require.NoError(t, err)
+	standalone, err := AcquireStandalone()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = standalone.Close(context.Background())
+		if current := currentOwner(); current != nil {
+			_ = current.Close(context.Background())
+		}
+	})
+
+	const name = "standalone-detach-committed-admission"
+	session := &ClientSession{owner: standalone}
+	admission := &serverAdmission{owner: standalone, name: name}
+	lifecycleMu.Lock()
+	standalone.committedAdmissions[name] = admission
+	sessions.Set(name, session)
+	lifecycleMu.Unlock()
+
+	lease := serverLeaseFor(name)
+	lease.Lock()
+	detached := detachSessionLocked(name)
+	lease.Unlock()
+
+	require.Same(t, session, detached)
+	lifecycleMu.Lock()
+	got, exists := standalone.committedAdmissions[name]
+	lifecycleMu.Unlock()
+	require.False(t, exists)
+	require.Nil(t, got)
+	lifecycleMu.Lock()
+	_, installedHasAdmission := installed.committedAdmissions[name]
+	lifecycleMu.Unlock()
+	require.False(t, installedHasAdmission)
+}
+
 func TestInstalledClosePreservesStandaloneDisabledState(t *testing.T) {
 	if current := currentOwner(); current != nil {
 		require.NoError(t, current.Close(context.Background()))

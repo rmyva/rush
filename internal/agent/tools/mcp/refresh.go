@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"time"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/pubsub"
@@ -206,6 +207,8 @@ func refreshKeyForRequest(request refreshRequest) refreshKey {
 	}
 }
 
+const refreshRequestTimeout = 15 * time.Second
+
 func (o *Owner) runRefresh(request refreshRequest) {
 	epoch := request.admission.epoch
 	if request.admission.committedName != "" {
@@ -222,7 +225,13 @@ func (o *Owner) runRefresh(request refreshRequest) {
 	}
 	// Refresh owns a temporary lifecycle reference while it holds the server
 	// read lease and performs the SDK list call.
-	refreshAdmission, err := o.admitServer(o.lifecycleCtx, request.cfg, request.name, false)
+	refreshTimeout := refreshRequestTimeout
+	if mcpConfig, ok := request.cfg.MCPConfig(request.name); ok && mcpConfig.Timeout > 0 {
+		refreshTimeout = mcpTimeout(mcpConfig)
+	}
+	refreshCtx, cancelRefresh := context.WithTimeout(o.lifecycleCtx, refreshTimeout)
+	defer cancelRefresh()
+	refreshAdmission, err := o.admitServer(refreshCtx, request.cfg, request.name, false)
 	if err != nil || refreshAdmission.epoch != epoch {
 		if err == nil {
 			refreshAdmission.done()
@@ -237,9 +246,10 @@ func (o *Owner) runRefresh(request refreshRequest) {
 	refreshAdmission.configIdentity = request.admission.configIdentity
 	refreshAdmission.hasConfigIdentity = request.admission.hasConfigIdentity
 	refreshAdmission.epoch = epoch
+	refreshAdmission.ctx = refreshCtx
 	switch request.kind {
 	case refreshToolsKind:
-		refreshTools(o.lifecycleCtx, request.cfg, request.name, &refreshAdmission)
+		refreshTools(refreshCtx, request.cfg, request.name, &refreshAdmission)
 	case refreshPromptsKind:
 		refreshPrompts(request.name, &refreshAdmission)
 	case refreshResourcesKind:

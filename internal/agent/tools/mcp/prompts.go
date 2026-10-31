@@ -172,7 +172,7 @@ func (o *Owner) RefreshPrompts(ctx context.Context, name string) {
 }
 
 func refreshPrompts(name string, admission *serverAdmission) {
-	lease, err := currentClientLeaseFor(admission.owner.lifecycleCtx, name, admission)
+	lease, err := currentClientLeaseFor(admission.ctx, name, admission)
 	if err != nil {
 		return
 	}
@@ -207,11 +207,14 @@ func getPrompts(ctx context.Context, c *ClientSession) ([]*Prompt, error) {
 	if c.InitializeResult().Capabilities.Prompts == nil {
 		return nil, nil
 	}
-	result, err := c.ListPrompts(ctx, &mcp.ListPromptsParams{})
-	if err != nil {
-		return nil, err
+	var prompts []*Prompt
+	for prompt, err := range c.Prompts(ctx, &mcp.ListPromptsParams{}) {
+		if err != nil {
+			return nil, err
+		}
+		prompts = append(prompts, prompt)
 	}
-	return result.Prompts, nil
+	return prompts, nil
 }
 
 // updatePrompts updates the global mcpPrompts and mcpClient2Prompts maps

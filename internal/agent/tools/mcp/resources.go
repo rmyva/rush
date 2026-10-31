@@ -224,7 +224,7 @@ func (o *Owner) RefreshResources(ctx context.Context, name string) {
 }
 
 func refreshResources(name string, admission *serverAdmission) {
-	lease, err := currentClientLeaseFor(admission.owner.lifecycleCtx, name, admission)
+	lease, err := currentClientLeaseFor(admission.ctx, name, admission)
 	if err != nil {
 		return
 	}
@@ -258,16 +258,19 @@ func getResources(ctx context.Context, c *ClientSession) ([]*Resource, error) {
 	if c.InitializeResult().Capabilities.Resources == nil {
 		return nil, nil
 	}
-	result, err := c.ListResources(ctx, &mcp.ListResourcesParams{})
-	if err != nil {
-		// Handle "Method not found" errors from MCP servers that don't support resources/list.
-		if isMethodNotFoundError(err) {
-			slog.Warn("MCP server does not support resources/list", "error", err)
-			return nil, nil
+	var resources []*Resource
+	for resource, err := range c.Resources(ctx, &mcp.ListResourcesParams{}) {
+		if err != nil {
+			// Handle "Method not found" errors from MCP servers that don't support resources/list.
+			if isMethodNotFoundError(err) {
+				slog.Warn("MCP server does not support resources/list", "error", err)
+				return nil, nil
+			}
+			return nil, err
 		}
-		return nil, err
+		resources = append(resources, resource)
 	}
-	return result.Resources, nil
+	return resources, nil
 }
 
 // isMethodNotFoundError checks if the error is a JSON-RPC "Method not found" error.

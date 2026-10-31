@@ -29,6 +29,8 @@ func configureStdioProcess(cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return nil
 		}
+		// This is best-effort tree killing, not a Windows Job Object; descendants
+		// that escape the process tree before taskkill runs may survive cancellation.
 		return session.KillProcess(cmd.Process.Pid)
 	}
 

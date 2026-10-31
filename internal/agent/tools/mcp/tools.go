@@ -352,11 +352,14 @@ func getTools(ctx context.Context, session *ClientSession) ([]*Tool, error) {
 	// Always call ListTools to get the actual available tools.
 	// The InitializeResult Capabilities.Tools field may be an empty object {},
 	// which is valid per MCP spec, but we still need to call ListTools to discover tools.
-	result, err := session.ListTools(ctx, &mcp.ListToolsParams{})
-	if err != nil {
-		return nil, err
+	var tools []*Tool
+	for tool, err := range session.Tools(ctx, &mcp.ListToolsParams{}) {
+		if err != nil {
+			return nil, err
+		}
+		tools = append(tools, tool)
 	}
-	return result.Tools, nil
+	return tools, nil
 }
 
 func updateTools(cfg *config.ConfigStore, name string, tools []*Tool) int {

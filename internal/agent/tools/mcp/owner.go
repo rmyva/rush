@@ -834,11 +834,16 @@ func detachSessionLocked(name string) *ClientSession {
 // detachSessionLifecycleLocked is the lifecycle-locked detach primitive. The
 // caller holds the server lease and lifecycleMu, in that order.
 func detachSessionLifecycleLocked(name string) *ClientSession {
-	if o := owner; o != nil {
-		delete(o.committedAdmissions, name)
+	session, ok := sessions.Get(name)
+	admissionOwner := owner
+	if ok && session.owner != nil {
+		admissionOwner = session.owner
+	}
+	if admissionOwner != nil {
+		delete(admissionOwner.committedAdmissions, name)
 	}
 	stateOwners.Del(name)
-	if session, ok := sessions.Get(name); ok {
+	if ok {
 		sessions.Del(name)
 		return session
 	}
