@@ -75,8 +75,11 @@ func TestLiveAttachBindingIdentity(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, hashA, batchInvocationHash(preSpec),
 		"sanity: the un-normalized invocation must not yet carry the canonical hash")
-	require.NoError(t, invRaw.Validate())
-	normSpec, err := batchOneItemSpec(invRaw, callA, preInput)
+	// Validate mutates its receiver, so preserve the padded invocation for
+	// the retry and validate a separate copy for the local hash oracle.
+	normalizedInv := invRaw
+	require.NoError(t, normalizedInv.Validate())
+	normSpec, err := batchOneItemSpec(normalizedInv, callA, preInput)
 	require.NoError(t, err)
 	require.Equal(t, hashA, batchInvocationHash(normSpec),
 		"identical hashes only after Validate normalizes the identity/defaults")

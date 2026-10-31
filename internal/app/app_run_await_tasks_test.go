@@ -294,10 +294,6 @@ func TestRunLoop_AwaitTasksMaxWait_TaskFinishesFirst_ScheduleCancelled(t *testin
 				admissionSSEToolCall("aw", "call_aw", "await_tasks", `{"until":"all","max_wait_seconds":60}`),
 				admissionSSEStop("aw", "tool_calls"),
 			})
-			go func() {
-				time.Sleep(300 * time.Millisecond)
-				completeDelegation(h.t, context.Background(), h.app, h.sessionID, "deleg-1", "done-fast", true)
-			}()
 		default:
 			loopText(w, "f", "final", 11, 3)
 		}
@@ -307,6 +303,13 @@ func TestRunLoop_AwaitTasksMaxWait_TaskFinishesFirst_ScheduleCancelled(t *testin
 	child, err := h.app.Sessions.Create(ctx, "child-1")
 	require.NoError(t, err)
 	claimDelegation(t, ctx, h.app, h.sessionID, "deleg-1", child.ID)
+	h.afterFirstTurn(func() {
+		rows, err := h.app.WakeScheduleStore().ListSchedules(context.Background(), h.sessionID)
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		require.Equal(t, "active", rows[0].State)
+		completeDelegation(t, context.Background(), h.app, h.sessionID, "deleg-1", "done-fast", true)
+	})
 
 	start := time.Now()
 	res, _, runErr := h.run(ctx, RunOverrides{})

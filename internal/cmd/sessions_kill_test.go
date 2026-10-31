@@ -160,9 +160,6 @@ func TestProbeThenKillHolder_StalePIDNotKilled(t *testing.T) {
 // the probe must report contention and forceKillHolder must still run and
 // actually terminate it — exactly like before this change.
 func TestProbeThenKillHolder_LiveHolderStillKilled(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns a real child process; skipped in -short")
-	}
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, ".rush")
 

@@ -32,6 +32,7 @@ func TestDispatchRecoversPanic(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	c := newClient(newHub(), nil)
+	t.Cleanup(func() { close(c.workQueue) })
 
 	var done sync.WaitGroup
 	done.Add(1)
@@ -62,6 +63,7 @@ func TestDispatchConnectionSurvivesHandlerPanic(t *testing.T) {
 	// TestDispatchRecoversPanic above - this test's panic also logs
 	// through the process-global slog.Default(), which that test captures.
 	c := newClient(newHub(), nil)
+	t.Cleanup(func() { close(c.workQueue) })
 
 	var panicked sync.WaitGroup
 	panicked.Add(1)
@@ -100,16 +102,26 @@ func TestDispatchBoundsConcurrencyPerConnection(t *testing.T) {
 	t.Parallel()
 
 	c := newClient(newHub(), nil)
-
-	const burst = maxConcurrentHandlersPerConn * 4
 	release := make(chan struct{})
+	releaseOnce := sync.Once{}
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	const burst = maxConcurrentHandlersPerConn * 4
+	var producers sync.WaitGroup
+	t.Cleanup(func() {
+		unblock()
+		producers.Wait()
+		close(c.workQueue)
+	})
 	var inFlight int32
 	var maxObserved int32
 	var started sync.WaitGroup
 	started.Add(burst)
+	var poolStarted = make(chan struct{}, workerPoolSize)
 
 	for i := 0; i < burst; i++ {
+		producers.Add(1)
 		go func() {
+			defer producers.Done()
 			c.dispatch("slow", "", func() {
 				n := atomic.AddInt32(&inFlight, 1)
 				for {
@@ -119,19 +131,35 @@ func TestDispatchBoundsConcurrencyPerConnection(t *testing.T) {
 					}
 				}
 				started.Done()
+				if n <= workerPoolSize {
+					select {
+					case poolStarted <- struct{}{}:
+					default:
+					}
+				}
 				<-release
 				atomic.AddInt32(&inFlight, -1)
 			})
 		}()
 	}
 
-	// Give the burst time to saturate the worker pool, then confirm the
-	// observed concurrency never exceeded the configured cap.
-	time.Sleep(300 * time.Millisecond)
+	// Wait for every worker to be executing a blocked handler before making
+	// the concurrency-bound assertion; a timer alone can observe startup lag.
+	startupTimer := time.NewTimer(5 * time.Second)
+	defer startupTimer.Stop()
+	for i := 0; i < workerPoolSize; i++ {
+		select {
+		case <-poolStarted:
+		case <-startupTimer.C:
+			t.Fatal("timed out waiting for dispatched handlers to finish")
+		}
+	}
+	require.Equal(t, int32(workerPoolSize), atomic.LoadInt32(&maxObserved),
+		"the worker pool must be saturated before asserting its concurrency bound")
 	require.LessOrEqual(t, atomic.LoadInt32(&maxObserved), int32(workerPoolSize),
 		"in-flight handlers for one connection must never exceed the per-connection worker pool size")
 
-	close(release)
+	unblock()
 	waitWithTimeout(t, &started, 5*time.Second)
 }
 
@@ -147,6 +175,7 @@ func TestDispatchQueueFullRepliesOverloadWithoutBlockingCaller(t *testing.T) {
 	t.Parallel()
 
 	c := newClient(newHub(), nil)
+	t.Cleanup(func() { close(c.workQueue) })
 	c.send = make(chan []byte, workQueueDepth+workerPoolSize+256)
 	warmUpWorkerPool(t, c)
 
@@ -210,10 +239,12 @@ func TestDispatchControlBypassesWorkSemaphore(t *testing.T) {
 	t.Parallel()
 
 	c := newClient(newHub(), nil)
+	t.Cleanup(func() { close(c.workQueue) })
 
 	// Saturate the WORK queue with workerPoolSize handlers that block until
 	// the test releases them.
 	release := make(chan struct{})
+	defer close(release)
 	var blocked sync.WaitGroup
 	blocked.Add(workerPoolSize)
 	for i := 0; i < workerPoolSize; i++ {
@@ -225,7 +256,6 @@ func TestDispatchControlBypassesWorkSemaphore(t *testing.T) {
 	// Wait for all of them to actually be running (i.e. the work queue's
 	// worker pool is fully saturated) before exercising the control-plane path.
 	waitWithTimeout(t, &blocked, 2*time.Second)
-	defer close(release)
 
 	// Now dispatch a control-plane-shaped command. If it shared the work
 	// queue/pool with the workerPoolSize blocked handlers above, this would
@@ -258,8 +288,15 @@ func TestDispatchControlDoesNotStarveWorkQueue(t *testing.T) {
 	c := newClient(newHub(), nil)
 	c.send = make(chan []byte, workQueueDepth+workerPoolSize+256)
 	warmUpWorkerPool(t, c)
-
 	release := make(chan struct{})
+	releaseOnce := sync.Once{}
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	var producers sync.WaitGroup
+	t.Cleanup(func() {
+		unblock()
+		producers.Wait()
+		close(c.workQueue)
+	})
 
 	// Saturate the queue+pool to steady-state overload — see
 	// saturateUntilSteadyOverload's doc for why a single overload reply
@@ -285,7 +322,9 @@ func TestDispatchControlDoesNotStarveWorkQueue(t *testing.T) {
 	// dispatch, sent now, must be rejected with an overload reply rather
 	// than blocking the caller or silently exceeding the cap.
 	done := make(chan struct{})
+	producers.Add(1)
 	go func() {
+		defer producers.Done()
 		c.dispatch("oneMoreWork", "one-more-id", func() {})
 		close(done)
 	}()
@@ -309,7 +348,7 @@ func TestDispatchControlDoesNotStarveWorkQueue(t *testing.T) {
 	}, time.Second, 10*time.Millisecond, "work dispatch sent while saturated must be rejected with overload, not silently admitted")
 
 	// Release the held handlers so the pool can drain.
-	close(release)
+	unblock()
 }
 
 // saturateUntilSteadyOverload dispatches "filler" items (name "filler",

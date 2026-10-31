@@ -27,8 +27,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -357,4 +359,88 @@ func TestRun_TitleFastModelFailureFallsBackToSmartAndNeverFailsTheTurn(t *testin
 	require.NoError(t, err)
 	assert.Equal(t, "ok", updated.Title,
 		"with the fast model failing, the title must come from the smart-model fallback, not be abandoned")
+}
+
+// TestTurnTitleJoinerWaitPaths directly pins both bounded join outcomes. A
+// blocked done channel forces the grace timeout; a subsequently closed done
+// channel is observed immediately on the second joiner. The seam provides an
+// ordering barrier proving disarm has happened before either wait starts.
+func TestTurnTitleJoinerWaitPaths(t *testing.T) {
+	const grace = 100 * time.Millisecond
+
+	t.Run("timeout with held-open done", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			disarmed := make(chan struct{})
+			turnTitleJoinAfterDisarmSeam = func() { close(disarmed) }
+			done := make(chan struct{})
+			returned := make(chan struct{})
+			var closeDone sync.Once
+			t.Cleanup(func() {
+				closeDone.Do(func() { close(done) })
+				<-returned
+				turnTitleJoinAfterDisarmSeam = nil
+			})
+
+			joiner := newTurnTitleJoiner(streamWatchdog{disarm: func() {}}, done, grace, "timeout")
+			go func() {
+				joiner.join()
+				close(returned)
+			}()
+
+			// The seam is a deterministic ordering barrier; quiescence confirms
+			// the joiner has begun waiting on its grace timer.
+			synctest.Wait()
+			select {
+			case <-disarmed:
+			default:
+				t.Fatal("join did not reach the post-disarm barrier")
+			}
+			select {
+			case <-returned:
+				t.Fatal("join returned before the grace timeout")
+			default:
+			}
+			time.Sleep(grace)
+			synctest.Wait()
+			select {
+			case <-returned:
+			default:
+				t.Fatal("join did not return after the grace timeout")
+			}
+		})
+	})
+
+	t.Run("done closes after disarm", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			disarmed := make(chan struct{})
+			turnTitleJoinAfterDisarmSeam = func() { close(disarmed) }
+			done := make(chan struct{})
+			returned := make(chan struct{})
+			var closeDone sync.Once
+			t.Cleanup(func() {
+				closeDone.Do(func() { close(done) })
+				<-returned
+				turnTitleJoinAfterDisarmSeam = nil
+			})
+
+			joiner := newTurnTitleJoiner(streamWatchdog{disarm: func() {}}, done, time.Minute, "done")
+			go func() {
+				joiner.join()
+				close(returned)
+			}()
+			synctest.Wait()
+			select {
+			case <-disarmed:
+			default:
+				t.Fatal("join did not reach the post-disarm barrier")
+			}
+			closeDone.Do(func() { close(done) })
+			synctest.Wait()
+			select {
+			case <-returned:
+			default:
+				t.Fatal("join did not return after done closed")
+			}
+		})
+	})
 }

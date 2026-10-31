@@ -271,7 +271,9 @@ func TestRuntimeContainmentFloodStaysBounded(t *testing.T) {
 			fencedCounts <- fencedTotal
 		}
 	}}
-	r, e, _, ctx := runtimeTestCommitHooks(t, func(_ context.Context, tr Transition) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	r, e, _, _ := runtimeTestCommitHooks(t, func(_ context.Context, tr Transition) error {
 		if tr.Event.Type == EventStopRequested {
 			entered <- struct{}{}
 			<-release
@@ -296,14 +298,11 @@ func TestRuntimeContainmentFloodStaysBounded(t *testing.T) {
 	// and parks in the commit hook, holding its publication.
 	go func() { first <- r.Stop(ctx, "r") }()
 	runtimeTestReceive(t, ctx, stopped)
-	<-entered
+	runtimeTestReceive(t, ctx, entered)
 	// The FIRST real stop also passes the queued hook; drain its token so
 	// only flood tokens remain for awaitAccepted.
-	<-stopAccepted
-	// ctx2 bounds every flood caller so a regression cannot hang CI; it is
-	// shared by all flood callers and outlives the held window.
-	ctx2, cancel2 := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel2()
+	runtimeTestReceive(t, ctx, stopAccepted)
+	// Flood callers use the same generous deadline as every other blocking step.
 	// Flood while the commit is held, without waiting for replies: every
 	// flood caller fences onto the held publication and blocks.
 	flood := func(pairs int) (unknownErrs, redundantErrs chan error, floodDone chan struct{}) {
@@ -315,8 +314,8 @@ func TestRuntimeContainmentFloodStaysBounded(t *testing.T) {
 		var wg sync.WaitGroup
 		for i := 0; i < pairs; i++ {
 			wg.Add(2)
-			go func() { defer wg.Done(); unknownErrs <- r.Stop(ctx2, "unknown.root") }()
-			go func() { defer wg.Done(); redundantErrs <- r.Stop(ctx2, "r") }()
+			go func() { defer wg.Done(); unknownErrs <- r.Stop(ctx, "unknown.root") }()
+			go func() { defer wg.Done(); redundantErrs <- r.Stop(ctx, "r") }()
 		}
 		go func() { wg.Wait(); close(floodDone) }()
 		return unknownErrs, redundantErrs, floodDone
@@ -324,7 +323,7 @@ func TestRuntimeContainmentFloodStaysBounded(t *testing.T) {
 	waitFlood := func(done chan struct{}) {
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
+		case <-ctx.Done():
 			t.Fatal("flood callers did not resolve")
 		}
 	}
@@ -337,8 +336,8 @@ func TestRuntimeContainmentFloodStaysBounded(t *testing.T) {
 			select {
 			case <-stopAccepted:
 				acceptedSeen++
-			case <-time.After(10 * time.Second):
-				t.Fatal("flood callers were not accepted before depth sampling")
+			case <-ctx.Done():
+				t.Fatalf("stalled acceptance: only %d of %d flood callers were accepted before deadline: %v", acceptedSeen, total, ctx.Err())
 			}
 		}
 	}
@@ -378,11 +377,9 @@ func TestRuntimeContainmentFloodStaysBounded(t *testing.T) {
 	require.Equal(t, 50, fenced1)
 	require.Equal(t, 450, fenced2)
 	// Before release: no flood caller may have been answered — immediate
-	// unfenced replies would violate the documented fence. (ctx2 bounds
-	// each flood caller at 5s: a caller never accepted within that window
-	// returns context.DeadlineExceeded, but awaitAccepted proves all were
-	// accepted before replies are asserted, and the typed-rejection loops
-	// below require NoError / ErrorIs, so a timeout cannot pass silently.)
+	// unfenced replies would violate the documented fence. The shared ctx bounds
+	// every caller; awaitAccepted proves all were accepted before replies are asserted,
+	// and the typed-rejection loops below ensure a timeout cannot pass silently.
 	assertUnanswered := func(chs ...<-chan error) {
 		for _, ch := range chs {
 			select {

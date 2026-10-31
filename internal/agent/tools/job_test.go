@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -294,8 +295,9 @@ func TestBackgroundShell_AutoBackground(t *testing.T) {
 		bgShell, err := bgManager.Start(ctx, workingDir, nil, "echo 'quick'", "")
 		require.NoError(t, err)
 
-		// Wait threshold time
-		time.Sleep(5 * time.Second)
+		// Poll real completion state rather than sleeping a fixed interval.
+		require.Eventually(t, bgShell.IsDone, 5*time.Second, 10*time.Millisecond,
+			"quick command did not complete promptly")
 
 		// Should be done by now
 		stdout, stderr, done, err := bgShell.GetOutput()
@@ -312,18 +314,23 @@ func TestBackgroundShell_AutoBackground(t *testing.T) {
 	t.Run("long command stays in background", func(t *testing.T) {
 		t.Parallel()
 		bgManager := shell.NewBackgroundShellManager()
-		bgShell, err := bgManager.Start(ctx, workingDir, nil, "sleep 20 && echo '20 seconds completed'", "")
+		bgShell, err := bgManager.Start(ctx, workingDir, nil, "echo 'started sentinel'; sleep 20 && echo '20 seconds completed'", "")
 		require.NoError(t, err)
 		defer bgManager.Kill(context.Background(), bgShell.ID)
 
-		// Wait threshold time
-		time.Sleep(5 * time.Second)
+		// Wait for command output proving the shell has started; a live process
+		// state alone could precede command execution.
+		require.Eventually(t, func() bool {
+			stdout, _, _, err := bgShell.GetOutput()
+			return err == nil && strings.Contains(stdout, "started sentinel")
+		}, 5*time.Second, 10*time.Millisecond, "long command did not emit its start sentinel")
+		require.False(t, bgShell.IsDone(), "Long command should still be running")
 
 		// Should still be running
 		stdout, stderr, done, err := bgShell.GetOutput()
 		require.NoError(t, err)
 		require.False(t, done, "Long command should still be running")
-		require.Empty(t, stdout, "No output yet from sleep command")
+		require.Contains(t, stdout, "started sentinel")
 		require.Empty(t, stderr)
 
 		// Verify we can get the shell from manager

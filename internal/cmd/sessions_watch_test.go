@@ -401,9 +401,6 @@ func TestFormatWatchSummary_NoTitle(t *testing.T) {
 // Revert-check: re-adding an mtime bound to the lock reader breaks
 // TestInspectSessionLockFact and this test.
 func TestIsSessionFinished_AgedLockWithLivePIDIsAlive(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns a real child process; skipped in -short")
-	}
 	a, dataDir := isolatedWatchEnvForTest(t)
 
 	ctx := context.Background()

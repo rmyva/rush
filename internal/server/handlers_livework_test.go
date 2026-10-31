@@ -313,9 +313,21 @@ func TestLiveWorkPusher_CoalescesBurstIntoOneSnapshot(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		p.mark(sess.ID)
 	}
-	// Wait past the coalescing window and a little more, then count.
-	time.Sleep(liveWorkCoalesceDelay + 400*time.Millisecond)
-	snapshots := collectLiveWorkSnapshots(t, client, 50*time.Millisecond)
+	// Wait for the first broadcast instead of assuming the coalescing timer
+	// and scheduler have completed after a fixed sleep.
+	var first *SessionLiveWorkPayload
+	select {
+	case raw := <-client.send:
+		var env WSMessage
+		require.NoError(t, json.Unmarshal(raw, &env))
+		require.Equal(t, EventSessionLiveWork, env.Type)
+		require.NoError(t, json.Unmarshal(env.Payload, &first))
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the coalesced live-work broadcast")
+	}
+	// Observe for a full coalescing window after the first broadcast to catch
+	// any duplicate snapshot emitted for the same burst.
+	snapshots := append([]*SessionLiveWorkPayload{first}, collectLiveWorkSnapshots(t, client, liveWorkCoalesceDelay+100*time.Millisecond)...)
 	require.Len(t, snapshots, 1, "a burst of marks must yield exactly one snapshot")
 	require.Equal(t, sess.ID, snapshots[0].SessionID)
 	require.Len(t, snapshots[0].Commands, 1)

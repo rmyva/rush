@@ -85,14 +85,10 @@ func TestSessionsWatchCmdRun_HonorsConfiguredDataDir(t *testing.T) {
 	// process-wide MCP owner before invoking the command.
 	built.Shutdown()
 
-	// Cancel shortly after start so a fix that correctly sees the lock as
-	// alive exits via the interrupted path rather than running forever;
-	// give it enough time (well above the 50ms poll interval, and above
-	// sessionsWatchCmdRun's own internal setupApp/db.Connect overhead) to
-	// have taken at least one real tick first, so "exited instantly, before
-	// any real polling happened" can't masquerade as "correctly kept
-	// watching".
-	time.AfterFunc(2*time.Second, cancel)
+	// Let the configured watch interval run before cancelling. A generous
+	// timeout avoids relying on setupApp/db startup completing within a tight
+	// wall-clock window.
+	time.AfterFunc(10*time.Second, cancel)
 
 	stderr := captureStderr(t, func() {
 		runErr := sessionsWatchCmd.RunE(sessionsWatchCmd, []string{sess.ID})

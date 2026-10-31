@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -301,38 +300,51 @@ func TestP0_ReleaseReturnsImmediatelyDuringHungCleanup(t *testing.T) {
 	tmpDir := t.TempDir()
 	sessionID := "test-session-p0-freeze-fix"
 
-	// Inject a FOREVER-blocking version of clearHolderMetadataFn.
-	// It will block on cleanupBlocker channel and NEVER unblock.
-	var cleanupStarted atomic.Bool
-	cleanupBlocker := make(chan struct{}) // Never closed
+	cleanupEntered := make(chan struct{})
+	cleanupFinished := make(chan struct{})
+	cleanupBlocker := make(chan struct{})
+	t.Cleanup(func() {
+		close(cleanupBlocker)
+		select {
+		case <-cleanupEntered:
+			select {
+			case <-cleanupFinished:
+			case <-time.After(30 * time.Second):
+				t.Error("cleanup goroutine did not finish after release")
+			}
+		default:
+			// No cleanup goroutine started (for example, lock acquisition failed).
+		}
+	})
 
 	// Acquire the first lock with the blocking cleanup function.
 	lk1, err := TryAcquireSessionLockWithOptions(tmpDir, sessionID, WithClearHolderMetadataFn(func(path string, expectedGeneration string) {
-		cleanupStarted.Store(true)
-		<-cleanupBlocker // Block forever - this simulates hung FS/AV/SMB
+		close(cleanupEntered)
+		<-cleanupBlocker
 		clearHolderMetadata(path, expectedGeneration)
+		close(cleanupFinished)
 	}))
 	require.NoError(t, err, "first TryAcquireSessionLock should succeed")
 	require.NotNil(t, lk1)
 
-	// Call Release() and measure how long it takes.
-	// CRITICAL: It should return IMMEDIATELY (within 100ms), not wait for cleanup.
-	releaseStart := time.Now()
-	releaseErr := lk1.Release()
-	releaseDuration := time.Since(releaseStart)
-
-	require.NoError(t, releaseErr, "Release should succeed")
-	require.Less(t, releaseDuration, 100*time.Millisecond,
-		"Release() should return immediately even with hung cleanup, got %v", releaseDuration)
-
-	// Verify that cleanup goroutine actually started (proves the "go" keyword is there).
-	deadline := time.After(2 * time.Second)
-	for !cleanupStarted.Load() {
-		select {
-		case <-deadline:
-			require.Fail(t, "cleanup goroutine did not start within 2 seconds")
-		case <-time.After(10 * time.Millisecond):
-		}
+	// Release() and assert its completion while cleanup remains blocked.
+	releaseDone := make(chan error, 1)
+	go func() { releaseDone <- lk1.Release() }()
+	select {
+	case err := <-releaseDone:
+		require.NoError(t, err, "Release should succeed")
+	case <-time.After(30 * time.Second):
+		t.Fatal("Release() did not return while metadata cleanup was blocked")
+	}
+	select {
+	case <-cleanupEntered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("cleanup goroutine did not start")
+	}
+	select {
+	case <-cleanupBlocker:
+		t.Fatal("cleanup blocker unexpectedly released before the assertion")
+	default:
 	}
 
 	// CRITICAL PROOF: Even though cleanup is blocked forever, the OS lock
@@ -348,8 +360,8 @@ func TestP0_ReleaseReturnsImmediatelyDuringHungCleanup(t *testing.T) {
 	// Cleanup the second lock.
 	require.NoError(t, lk2.Release())
 
-	// Note: We don't unblock cleanupBlocker because it's meant to block forever.
-	// The goroutine will be GC'd when the test completes. This is fine for a test.
+	// Note: cleanupBlocker is released by t.Cleanup; cleanup is asynchronous and
+	// does not hold the OS lock while it runs.
 }
 
 // TestP1_2_ReleaseClearsMetadata verifies that Release() does attempt to clear
