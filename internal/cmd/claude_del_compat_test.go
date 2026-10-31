@@ -9,6 +9,57 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestClaudeDel_StripsLegacyBlockByReplacingInode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, claudeMdFile)
+	alias := filepath.Join(dir, "hardlink")
+	original := "# User heading\n\n<!-- crush-claude-init:v8 -->\nlegacy\n<!-- /crush-claude-init -->\n\n# User content after block\n"
+	require.NoError(t, os.WriteFile(path, []byte(original), 0o644))
+	if err := os.Link(path, alias); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+
+	removed, err := stripClaudeMdBlocks(path)
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	aliased, err := os.ReadFile(alias)
+	require.NoError(t, err)
+	assert.NotEqual(t, string(got), string(aliased), "replacement should leave the hard link pointing at the old file")
+	assert.Contains(t, string(aliased), "legacy")
+}
+
+func TestClaudeDel_StripsLegacyBlockAndPreservesRemainingDocument(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "original.md")
+	path := filepath.Join(dir, claudeMdFile)
+	original := "# User heading\n\n<!-- crush-claude-init:v8 -->\nlegacy\n<!-- /crush-claude-init -->\n\n# User content after block\n"
+	require.NoError(t, os.WriteFile(target, []byte(original), 0o644))
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("file symlinks unavailable: %v", err)
+	}
+
+	removed, err := stripClaudeMdBlocks(path)
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "# User heading")
+	assert.Contains(t, string(got), "# User content after block")
+	assert.NotContains(t, string(got), "legacy")
+
+	// os.WriteFile(path, ...) would follow the symlink and overwrite target.
+	// Atomic replacement must instead replace the symlink itself, preserving
+	// the original target document.
+	targetData, err := os.ReadFile(target)
+	require.NoError(t, err)
+	assert.Equal(t, original, string(targetData), "atomic replacement must not write through the symlink")
+	info, err := os.Lstat(path)
+	require.NoError(t, err)
+	assert.Zero(t, info.Mode()&os.ModeSymlink, "destination should be replaced, not remain a symlink")
+}
+
 // TestClaudeDel_RemovesLegacyPrerenameInstall verifies that claude-del removes
 // both legacy crush.md/crush-fallback.md files (from pre-rename installs) and
 // the new rush.md/rush-fallback.md files, while leaving foreign files alone.

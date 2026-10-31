@@ -77,7 +77,7 @@ blocks:
       ```
       `--allow-tool <name>` repeats for non-bash tools or `tool:action` (e.g. `view`, `edit:write`); `bash`/`bash:execute` are no-ops. `--allow-bash '<pattern>'` repeats: word-boundary prefix (`git diff` matches `git diff HEAD~1`, not `git difftool`), `exact:cmd`, `glob:pat`, `regex:pat`. First three reject chaining metacharacters (`;`, `|`, `&&`, `$(`, backtick); regex alone bypasses guard, use deliberately. `run_command` program+argv is synthesized and matched like bash. `git_read` supports fixed read-only git commands and needs only `--allow-tool git_read`. Any tool call or command not matched by an allow rule is denied immediately; there is no permission prompt.
       Equivalent `rush.json`: `{"permissions":{"run":{"restrict":true,"allow_tools":["view"],"allow_bash":["git diff","glob:ls *"]}}}`. CLI lists union with config; `--restrict-run` forces restrict on. Global non-run `permissions.allowed_tools` is an earlier bypass: `bash` there approves all shell regardless, so leave it clear when patterns should govern. Applies only to noninteractive `rush run`, not TUI/web. Add restrict when appropriate without human authorization: narrows risk, unlike peak-hours bypass.
-  - common: |-
+  - claude: &monitoring |-
       ## Monitoring
       `rush sessions watch` is primary: auto-detects end, summarizes duration/tokens/cost, unlike `sessions tail --follow` doesn't hang on dead locks. `rush sessions watch` opens picker; `watch <id>` tails directly (short hash okay). Fresh pulse means alive, not progress; trust `sessions why` for STALLED and check its last-activity evidence. Resume the same session with `--session` only after it exits with `exit_reason: stalled`; a `STALLED` status alone is not that exit reason. Watch/tree may show transient worker child sessions; expected, don't inject into them.
       Live-tail shows tool calls with key arguments inline:
@@ -87,7 +87,12 @@ blocks:
       [tool-result: edit] internal/cmd/sessions.go: <result> (+3 lines)
       ```
       Read-only alternatives: `sessions list` (STATUS), `locks` (`alive`/`ping`/`stopping`/`offline`/`between turns`; lock held only during turn, so offline alone doesn't mean dead), `show <id> --with-messages`, `last <id> [--n N]`, `why <id>` (prefer its explanation to cross-checking list/locks). `Ctrl+C` in watch reports `(interrupted — session still running)` without a summary.
-    claude: |-
+    gemini: *monitoring
+    grok: *monitoring
+    qwen: *monitoring
+    opencode: *monitoring
+    omp: *monitoring
+  - claude: |-
       **Liveness watchdog:** check about every 10 minutes while runs are live with `rush sessions why <id>` and `rush sessions locks <id>`; this probes liveness, not output. Offline/stopping/aging lock is normal between turns while waiting on bash job, delegation, or retry. `why` reporting `running` means keep waiting; `crashed` means process gone. For batches, `batch live` means work remains; `batch unknown` (incomplete read) means the batch read did not establish state. Never relaunch a live or unknown session/batch. `batch unknown` (incomplete read) is not termination evidence. Inspect output and `sessions last` only after confirmed process termination; relaunch same session only then.
       Never relaunch into a live or unknown session: completion may describe a rejected duplicate, and incomplete batch reads are not evidence of termination. Confirm process termination with `why` or `show <id> --with-messages`; never infer it from completion or `locks offline`. For batches, require state other than `live` or `unknown` before relaunch; `batch unknown` (incomplete read) is not a terminated state. Nudge live runs with `rush sessions inject <id> -m "<msg>"` (`--interrupt` to cut in).
       **Tear the watchdog down when it has nothing left to watch.** Once a session finishes, if you're not launching a replacement and no other `/rush` runs are in flight, drop the liveness loop. Re-arm it only when you launch the next run.

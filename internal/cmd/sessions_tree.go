@@ -114,7 +114,7 @@ func printTreeNode(w *os.File, s session.Session, children map[string][]session.
 	if isLast {
 		connector = "└── "
 	}
-	if prefix == "" {
+	if currentDepth == 0 {
 		connector = ""
 	}
 
@@ -128,15 +128,15 @@ func printTreeNode(w *os.File, s session.Session, children map[string][]session.
 
 	ch := children[s.ID]
 	for i, c := range ch {
+		last := i == len(ch)-1
 		childPrefix := prefix
-		if prefix != "" || !isLast {
-			if isLast && prefix != "" {
+		if currentDepth > 0 {
+			if isLast {
 				childPrefix += "    "
-			} else if prefix != "" {
+			} else {
 				childPrefix += "│   "
 			}
 		}
-		last := i == len(ch)-1
 		printTreeNode(w, c, children, childPrefix, last, maxDepth, currentDepth+1)
 	}
 }

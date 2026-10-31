@@ -166,7 +166,9 @@ func runProvidersCmdInIsolatedAppFull(t *testing.T, cmd *cobra.Command, provider
 	done := make(chan struct{})
 	go func() { _, _ = io.Copy(&buf, r); close(done) }()
 
-	runErr = cmd.RunE(carrier, runArgs)
+	// RunE receives the positional arguments only, as under cobra: flags
+	// such as --all were already parsed onto cmd above.
+	runErr = cmd.RunE(carrier, cmd.Flags().Args())
 
 	_ = w.Close()
 	os.Stdout = oldOut

@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/agent/tools"
@@ -24,6 +25,10 @@ const (
 // paragraph for a question-tool stop. Unknown roles intentionally omit the
 // resume command rather than print a command rejected by `rush run`.
 func AwaitingAnswerGuidance(question string, options []string, sessionID string, role string) string {
+	return awaitingAnswerGuidance(question, options, sessionID, role, runtime.GOOS == "windows")
+}
+
+func awaitingAnswerGuidance(question string, options []string, sessionID string, role string, windowsShell bool) string {
 	optsLine := ""
 	if len(options) > 0 {
 		optsLine = "\n\nSuggested options: " + strings.Join(options, " | ")
@@ -31,7 +36,12 @@ func AwaitingAnswerGuidance(question string, options []string, sessionID string,
 	resume := ""
 	switch role {
 	case "smart", "fast", "worker", "reviewer":
-		resume = fmt.Sprintf("resume with:\n\n  rush run --role %s --session %s \"<your answer>\"", role, sessionID)
+		quotedID, ok := quoteResumeSessionID(sessionID, windowsShell)
+		if !ok {
+			resume = fmt.Sprintf("cannot safely render a resume command for session %q in Windows cmd; resume it manually with `rush run --role %s --session <session-id> \"<your answer>\"`", sessionID, role)
+		} else {
+			resume = fmt.Sprintf("resume with:\n\n  rush run --role %s --session %s \"<your answer>\"", role, quotedID)
+		}
 	default:
 		resume = fmt.Sprintf("do not resume with a command: this run's model role %q is unknown and may not be accepted by `rush run`. Choose a supported role (smart, fast, worker, or reviewer) before resuming session %s.", role, sessionID)
 	}
@@ -46,6 +56,41 @@ func AwaitingAnswerGuidance(question string, options []string, sessionID string,
 			"\"awaiting_answer\" as a failure.",
 		question, optsLine, resume,
 	)
+}
+
+// quoteResumeSessionID returns shell syntax for a session ID. Windows cmd.exe
+// expands percent variables even inside double quotes, and its quote/backslash
+// rules are not POSIX rules; only emit IDs from a conservative alphabet there.
+func quoteResumeSessionID(sessionID string, windowsShell bool) (string, bool) {
+	if windowsShell {
+		if sessionID == "" {
+			return `""`, true
+		}
+		for _, r := range sessionID {
+			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./: \\", r) {
+				continue
+			}
+			return "", false
+		}
+		if !strings.ContainsRune(sessionID, ' ') {
+			return sessionID, true
+		}
+		// Match the standard Windows command-line quoting convention: backslashes
+		// immediately before the closing quote are doubled so the argument retains
+		// them. Embedded quotes remain rejected above as cmd expansion is unsafe.
+		trailingBackslashes := len(sessionID) - len(strings.TrimRight(sessionID, `\`))
+		return `"` + sessionID + strings.Repeat(`\`, trailingBackslashes) + `"`, true
+	}
+	if sessionID == "" {
+		return `''`, true
+	}
+	for _, r := range sessionID {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./:", r) {
+			continue
+		}
+		return "'" + strings.ReplaceAll(sessionID, "'", `'\''`) + "'", true
+	}
+	return sessionID, true
 }
 
 // subAgentQuestionText builds the tool-result text runSubAgent returns when

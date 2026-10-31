@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/spf13/cobra"
@@ -77,7 +78,7 @@ echo '{"disable": true}' | rush providers patch hyper
 
 		updates := make(map[string]any, len(fields))
 		for k, v := range fields {
-			updates["providers."+args[0]+"."+k] = v
+			updates["providers."+escapeSJSONPathComponent(args[0])+"."+escapeSJSONPathComponent(k)] = v
 		}
 		if err := a.Store().SetConfigFields(scope, updates); err != nil {
 			return fmt.Errorf("failed to write patch: %w", err)
@@ -127,4 +128,59 @@ func joinComma(ss []string) string {
 		out += s
 	}
 	return out
+}
+
+func scopeFromFlags(cmd *cobra.Command, def config.Scope) (config.Scope, error) {
+	global, _ := cmd.Flags().GetBool("global")
+	local, _ := cmd.Flags().GetBool("local")
+	switch {
+	case global && local:
+		return def, fmt.Errorf("--global and --local are mutually exclusive")
+	case global:
+		return config.ScopeGlobal, nil
+	case local:
+		return config.ScopeWorkspace, nil
+	default:
+		return def, nil
+	}
+}
+
+func maskKey(k string) string {
+	if k == "" {
+		return "-"
+	}
+	if strings.HasPrefix(k, "$") {
+		// Env-template still unresolved — show the template literally so
+		// it's obvious where the key comes from.
+		return k
+	}
+	if len(k) <= 4 {
+		return "****"
+	}
+	return strings.Repeat("*", 4) + k[len(k)-4:]
+}
+
+func matchesGrep(id string, p config.ProviderConfig, patternLower string) bool {
+	fields := []string{
+		strings.ToLower(id),
+		strings.ToLower(p.Name),
+		strings.ToLower(string(p.Type)),
+	}
+	for _, field := range fields {
+		if strings.Contains(field, patternLower) {
+			return true
+		}
+	}
+	return false
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+func escapeSJSONPathComponent(s string) string {
+	return strings.NewReplacer(`\`, `\\`, ".", `\.`, "*", `\*`, "?", `\?`, "#", `\#`, "|", `\|`, "@", `\@`).Replace(s)
 }

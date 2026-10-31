@@ -6,6 +6,62 @@ import (
 	"testing"
 )
 
+func TestQuoteResumeSessionID(t *testing.T) {
+	tests := []struct {
+		name         string
+		sessionID    string
+		windowsShell bool
+		want         string
+		wantOK       bool
+	}{
+		{name: "safe id unchanged on posix", sessionID: "sess-123", want: "sess-123", wantOK: true},
+		{name: "empty id quoted on posix", sessionID: "", want: `''`, wantOK: true},
+		{name: "spaces quoted on posix", sessionID: "session id", want: "'session id'", wantOK: true},
+		{name: "single quote escaped on posix", sessionID: "a'b", want: `'a'\''b'`, wantOK: true},
+		{name: "safe id unchanged on windows", sessionID: "sess-123", windowsShell: true, want: "sess-123", wantOK: true},
+		{name: "spaces double quoted on windows", sessionID: "session id", windowsShell: true, want: `"session id"`, wantOK: true},
+		{name: "trailing backslash doubled before closing quote on windows", sessionID: "session \\", windowsShell: true, want: `"session \\"`, wantOK: true},
+		{name: "empty id quoted on windows", sessionID: "", windowsShell: true, want: `""`, wantOK: true},
+		{name: "reject cmd percent expansion", sessionID: "%PATH%", windowsShell: true},
+		{name: "reject cmd metacharacters", sessionID: "a&b", windowsShell: true},
+		{name: "reject embedded double quote", sessionID: `a"b`, windowsShell: true},
+		{name: "reject backslash and quote", sessionID: `a\"b`, windowsShell: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := quoteResumeSessionID(tt.sessionID, tt.windowsShell)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("quoteResumeSessionID(%q, %t) = (%q, %t), want (%q, %t)", tt.sessionID, tt.windowsShell, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestAwaitingAnswerGuidanceRefusesUnsafeWindowsSessionID(t *testing.T) {
+	guidance := awaitingAnswerGuidance("Q?", nil, `%PATH%`, "smart", true)
+	if strings.Contains(guidance, "--session %PATH%") || strings.Contains(guidance, `--session "%PATH%"`) {
+		t.Fatalf("guidance must not claim a cmd-safe command for arbitrary IDs: %q", guidance)
+	}
+	if !strings.Contains(guidance, "cannot safely render") {
+		t.Fatalf("guidance should report the cmd limitation: %q", guidance)
+	}
+}
+
+func TestAwaitingAnswerGuidanceQuotesUnsafeResumeSessionID(t *testing.T) {
+	guidance := awaitingAnswerGuidance("Q?", nil, "session id", "smart", false)
+	quoted, ok := quoteResumeSessionID("session id", false)
+	if !ok || !strings.Contains(guidance, "--session "+quoted+" \"<your answer>\"") {
+		t.Errorf("guidance %q must quote the unsafe POSIX session id", guidance)
+	}
+}
+
+func TestAwaitingAnswerGuidanceQuotesWindowsResumeSessionID(t *testing.T) {
+	guidance := awaitingAnswerGuidance("Q?", nil, "session id", "smart", true)
+	if !strings.Contains(guidance, `--session "session id" "<your answer>"`) {
+		t.Errorf("guidance %q must double-quote the Windows session id", guidance)
+	}
+}
+
 func TestAwaitingAnswerGuidance(t *testing.T) {
 	t.Run("without options", func(t *testing.T) {
 		guidance := AwaitingAnswerGuidance("Which env should I deploy to?", nil, "sess-123", "smart")

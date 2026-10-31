@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/spf13/cobra"
 )
 
@@ -208,7 +209,7 @@ func stripClaudeMdBlocks(path string) (int, error) {
 		return len(matches), nil
 	}
 
-	if err := os.WriteFile(path, []byte(cleaned+"\n"), 0o644); err != nil {
+	if err := fsext.AtomicWriteFile(path, []byte(cleaned+"\n"), 0o644); err != nil {
 		return 0, fmt.Errorf("failed to write %s: %w", path, err)
 	}
 	fmt.Fprintf(os.Stderr, "stripped %d crush-claude-init block(s) from %s\n", len(matches), claudeMdFile)

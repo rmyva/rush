@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -235,23 +236,23 @@ rush providers set openai --peak-hours 09:00-18:00 --peak-hours-message "Low quo
 		updates := map[string]any{}
 		if cmd.Flags().Changed("api-key") {
 			v, _ := cmd.Flags().GetString("api-key")
-			updates["providers."+id+".api_key"] = v
+			updates["providers."+escapeSJSONPathComponent(id)+".api_key"] = v
 		}
 		if cmd.Flags().Changed("base-url") {
 			v, _ := cmd.Flags().GetString("base-url")
-			updates["providers."+id+".base_url"] = v
+			updates["providers."+escapeSJSONPathComponent(id)+".base_url"] = v
 		}
 		if cmd.Flags().Changed("type") {
 			v, _ := cmd.Flags().GetString("type")
-			updates["providers."+id+".type"] = v
+			updates["providers."+escapeSJSONPathComponent(id)+".type"] = v
 		}
 		if cmd.Flags().Changed("name") {
 			v, _ := cmd.Flags().GetString("name")
-			updates["providers."+id+".name"] = v
+			updates["providers."+escapeSJSONPathComponent(id)+".name"] = v
 		}
 		if cmd.Flags().Changed("disabled") {
 			v, _ := cmd.Flags().GetBool("disabled")
-			updates["providers."+id+".disable"] = v
+			updates["providers."+escapeSJSONPathComponent(id)+".disable"] = v
 		}
 		clearPeakHours := false
 		var peakHoursWindow *config.PeakHoursWindow
@@ -309,16 +310,15 @@ rush providers set openai --peak-hours 09:00-18:00 --peak-hours-message "Low quo
 				peakHoursWindow = existing
 				peakHoursWindow.Message = peakHoursMessage
 			}
-			updates["providers."+id+".peak_hours"] = peakHoursWindow
+			updates["providers."+escapeSJSONPathComponent(id)+".peak_hours"] = peakHoursWindow
 		}
 
 		if clearPeakHours {
-			if err := a.Store().RemoveConfigField(scope, "providers."+id+".peak_hours"); err != nil {
+			if err := a.Store().RemoveConfigField(scope, "providers."+escapeSJSONPathComponent(id)+".peak_hours"); err != nil {
 				return fmt.Errorf("failed to clear peak_hours: %w", err)
 			}
 			fmt.Fprintf(os.Stderr, "cleared peak_hours for provider %q in %s scope\n", id, scope)
 		}
-
 		if len(updates) > 0 {
 			if err := a.Store().SetConfigFields(scope, updates); err != nil {
 				return fmt.Errorf("failed to write provider config: %w", err)
@@ -438,18 +438,18 @@ rush providers add zai --name "Z.AI" --type openai-compat --peak-hours 09:00-18:
 		}
 
 		fields := map[string]any{
-			"providers." + id + ".name":    name,
-			"providers." + id + ".type":    typeStr,
-			"providers." + id + ".disable": pc.Disable,
+			"providers." + escapeSJSONPathComponent(id) + ".name":    name,
+			"providers." + escapeSJSONPathComponent(id) + ".type":    typeStr,
+			"providers." + escapeSJSONPathComponent(id) + ".disable": pc.Disable,
 		}
 		if baseURL != "" {
-			fields["providers."+id+".base_url"] = baseURL
+			fields["providers."+escapeSJSONPathComponent(id)+".base_url"] = baseURL
 		}
 		if apiKey != "" {
-			fields["providers."+id+".api_key"] = apiKey
+			fields["providers."+escapeSJSONPathComponent(id)+".api_key"] = apiKey
 		}
 		if peakHours != nil {
-			fields["providers."+id+".peak_hours"] = peakHours
+			fields["providers."+escapeSJSONPathComponent(id)+".peak_hours"] = peakHours
 		}
 
 		if err := a.Store().SetConfigFields(scope, fields); err != nil {
@@ -466,11 +466,10 @@ rush providers add zai --name "Z.AI" --type openai-compat --peak-hours 09:00-18:
 				fmt.Fprintf(os.Stderr, "✓ connection verified\n")
 			}
 		}
-
 		// Fetch models if enabled
 		if enable {
-			if err := updateSingleProvider(a, id); err != nil {
-				fmt.Fprintf(os.Stderr, "note: failed to fetch models: %v\n", err)
+			if err := updateSingleProvider(a, id, scope); err != nil {
+				return fmt.Errorf("provider created, but model refresh failed: %w", err)
 			}
 		}
 
@@ -505,11 +504,15 @@ configuration. Shows a summary of added/removed models.`,
 			return updateAllProviders(a)
 		}
 
-		return updateSingleProvider(a, args[0])
+		return updateSingleProvider(a, args[0], config.ScopeGlobal)
 	},
 }
 
-func updateSingleProvider(a *app.App, id string) error {
+func updateSingleProvider(a *app.App, id string, scopes ...config.Scope) error {
+	writeScope := config.ScopeGlobal
+	if len(scopes) > 0 {
+		writeScope = scopes[0]
+	}
 	p, ok := a.Config().Providers.Get(id)
 	if !ok {
 		return fmt.Errorf("provider %q not found", id)
@@ -575,12 +578,11 @@ func updateSingleProvider(a *app.App, id string) error {
 	// Save updated models to config
 	modelsJSON, _ := json.Marshal(newModels)
 	updates := map[string]any{
-		"providers." + id + ".models": json.RawMessage(modelsJSON),
+		"providers." + escapeSJSONPathComponent(id) + ".models": json.RawMessage(modelsJSON),
 	}
-	if err := a.Store().SetConfigFields(config.ScopeGlobal, updates); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to save updated models: %v\n", err)
+	if err := a.Store().SetConfigFields(writeScope, updates); err != nil {
+		return fmt.Errorf("failed to save updated models: %w", err)
 	}
-
 	// Print warnings
 	for _, w := range warnings {
 		fmt.Fprintf(os.Stderr, "note: %s\n", w)
@@ -592,14 +594,19 @@ func updateSingleProvider(a *app.App, id string) error {
 func updateAllProviders(a *app.App) error {
 	providers := a.Config().EnabledProviders()
 	count := 0
+	var updateErrors []error
 	for _, p := range providers {
-		if err := updateSingleProvider(a, p.ID); err != nil {
+		if err := updateSingleProvider(a, p.ID, config.ScopeGlobal); err != nil {
 			fmt.Fprintf(os.Stderr, "error updating %s: %v\n", p.ID, err)
+			updateErrors = append(updateErrors, fmt.Errorf("%s: %w", p.ID, err))
 			continue
 		}
 		count++
 	}
 	fmt.Fprintf(os.Stderr, "Updated %d provider(s)\n", count)
+	if len(updateErrors) > 0 {
+		return fmt.Errorf("failed to update %d provider(s): %w", len(updateErrors), errors.Join(updateErrors...))
+	}
 	return nil
 }
 
@@ -629,7 +636,7 @@ var providersEnableCmd = &cobra.Command{
 			return nil
 		}
 
-		if err := a.Store().SetConfigField(scope, "providers."+id+".disable", false); err != nil {
+		if err := a.Store().SetConfigField(scope, "providers."+escapeSJSONPathComponent(id)+".disable", false); err != nil {
 			return fmt.Errorf("failed to enable provider: %w", err)
 		}
 
@@ -664,7 +671,7 @@ var providersDisableCmd = &cobra.Command{
 			return nil
 		}
 
-		if err := a.Store().SetConfigField(scope, "providers."+id+".disable", true); err != nil {
+		if err := a.Store().SetConfigField(scope, "providers."+escapeSJSONPathComponent(id)+".disable", true); err != nil {
 			return fmt.Errorf("failed to disable provider: %w", err)
 		}
 
@@ -723,7 +730,7 @@ persistently suppress it.`,
 			}
 		}
 
-		if err := a.Store().RemoveConfigField(scope, "providers."+id); err != nil {
+		if err := a.Store().RemoveConfigField(scope, "providers."+escapeSJSONPathComponent(id)); err != nil {
 			return fmt.Errorf("failed to remove provider from %s scope: %w", scope, err)
 		}
 		fmt.Fprintf(os.Stderr, "removed provider %q from %s scope\n", id, scope)
@@ -939,55 +946,4 @@ func makeProviderListItem(id string, p config.ProviderConfig) providerListItem {
 		Models:        len(p.Models),
 		HasOAuth:      p.OAuthToken != nil,
 	}
-}
-
-func scopeFromFlags(cmd *cobra.Command, def config.Scope) (config.Scope, error) {
-	global, _ := cmd.Flags().GetBool("global")
-	local, _ := cmd.Flags().GetBool("local")
-	switch {
-	case global && local:
-		return def, fmt.Errorf("--global and --local are mutually exclusive")
-	case global:
-		return config.ScopeGlobal, nil
-	case local:
-		return config.ScopeWorkspace, nil
-	default:
-		return def, nil
-	}
-}
-
-func maskKey(k string) string {
-	if k == "" {
-		return "-"
-	}
-	if strings.HasPrefix(k, "$") {
-		// Env-template still unresolved — show the template literally so
-		// it's obvious where the key comes from.
-		return k
-	}
-	if len(k) <= 4 {
-		return "****"
-	}
-	return strings.Repeat("*", 4) + k[len(k)-4:]
-}
-
-func matchesGrep(id string, p config.ProviderConfig, patternLower string) bool {
-	fields := []string{
-		strings.ToLower(id),
-		strings.ToLower(p.Name),
-		strings.ToLower(string(p.Type)),
-	}
-	for _, field := range fields {
-		if strings.Contains(field, patternLower) {
-			return true
-		}
-	}
-	return false
-}
-
-func dash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }

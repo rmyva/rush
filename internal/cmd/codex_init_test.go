@@ -86,6 +86,7 @@ func TestCodexInit_CreatesSlashCommand(t *testing.T) {
 	assert.Contains(t, got, "## Scoping permissions for a delegation")
 	assert.Contains(t, got, "## When the lock is stuck")
 	assert.Contains(t, got, "## After the run finishes — you are responsible for verifying everything")
+	assert.NotContains(t, got, "watch` is primary", "Codex monitoring must not inherit the common watch-primary guidance")
 }
 
 func TestCodexInit_GlobalScopeCreatesAllDelegationSkills(t *testing.T) {
@@ -191,6 +192,33 @@ func TestCodexInit_CreatesWcrushSkillFromCanonicalTemplate(t *testing.T) {
 	assert.NotContains(t, got, "codex queue")
 }
 
+func skillBodyAfterFrontmatter(content string) string {
+	content = strings.TrimPrefix(content, claudeSlashCommandSentinel+"\n")
+	if strings.HasPrefix(content, "---\n") {
+		end := strings.Index(content[4:], "\n---\n")
+		if end >= 0 {
+			content = content[4+end+len("\n---\n"):]
+		}
+	}
+	content = strings.TrimLeft(content, "\n")
+	content = strings.TrimPrefix(content, claudeSlashCommandSentinel+"\n\n")
+	content = strings.TrimPrefix(content, "Any text you type after invoking this skill is the task — treat it exactly as `$ARGUMENTS` below would have been substituted.\n\n")
+	return content
+}
+
+func TestSkillBodyAfterFrontmatterIgnoresGeneratedWrappers(t *testing.T) {
+	const body = "Do the requested work.\n"
+	claude := renderFrontMatterMD(claudeSlashCommandSentinel, "Claude description", body, "$ARGUMENTS")
+	codex := toSkillMD("sample", "Codex description", body)
+
+	assert.Equal(t, body, skillBodyAfterFrontmatter(claude))
+	assert.Equal(t, body, skillBodyAfterFrontmatter(codex))
+	assert.Equal(t, skillBodyAfterFrontmatter(claude), skillBodyAfterFrontmatter(codex))
+
+	changedCodex := toSkillMD("sample", "Codex description", "Do different work.\n")
+	assert.NotEqual(t, skillBodyAfterFrontmatter(claude), skillBodyAfterFrontmatter(changedCodex))
+}
+
 func TestInstalledCodexSkillsDifferFromClaudeAndReturnCompletion(t *testing.T) {
 	skillsDir := t.TempDir()
 	require.NoError(t, installCodexSkills(skillsDir))
@@ -208,9 +236,15 @@ func TestInstalledCodexSkillsDifferFromClaudeAndReturnCompletion(t *testing.T) {
 	for name, claude := range claudeContent {
 		codex, readErr := os.ReadFile(filepath.Join(skillsDir, name, "SKILL.md"))
 		require.NoError(t, readErr)
-		assert.NotEqual(t, claude, string(codex), "%s must have target-specific instructions", name)
-		assert.NotContains(t, string(codex), "--codex-thread-id", "%s Codex variant must not mention Codex thread callbacks", name)
+		codexContent := string(codex)
+		assert.NotEqual(t, skillBodyAfterFrontmatter(claude), skillBodyAfterFrontmatter(codexContent), "%s must have target-specific instructions", name)
+		assert.NotContains(t, codexContent, "--codex-thread-id", "%s Codex variant must not mention Codex thread callbacks", name)
 		assert.NotContains(t, claude, "--codex-thread-id", "%s Claude variant must not mention Codex callbacks", name)
+		if name == "rush" {
+			assert.NotContains(t, codexContent, "watch` is primary", "generated Codex skill must not inherit Claude/common watch-primary monitoring")
+			assert.Contains(t, codexContent, "**Completion:**", "Codex-specific completion instructions must remain in Codex")
+			assert.NotContains(t, claude, "**Completion:**", "Codex-specific completion instructions must not appear in Claude")
+		}
 	}
 }
 

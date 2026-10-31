@@ -157,68 +157,65 @@ func sessionsDiffCmdRun(cmd *cobra.Command, args []string) error {
 // extractFilePaths parses the JSON input of a tool call to find file_path
 // values. For multiedit, iterates the edits array.
 func extractFilePaths(toolName, input string) []string {
-	// Simple JSON key extraction without full parsing.
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(input), &object); err != nil {
+		return nil
+	}
+	if strings.ToLower(toolName) != "multiedit" {
+		fp := decodeJSONString(object["file_path"])
+		if fp == "" {
+			return nil
+		}
+		return []string{fp}
+	}
+	var edits []map[string]json.RawMessage
+	if err := json.Unmarshal(object["edits"], &edits); err != nil {
+		return nil
+	}
 	var paths []string
-
-	// For multiedit, look for file_path inside each edit object.
-	if strings.ToLower(toolName) == "multiedit" {
-		// Extract edits[].file_path using simple scanning.
-		paths = append(paths, extractJSONStringValues(input, "file_path")...)
-	} else {
-		// For edit/write/create, extract the top-level file_path.
-		if fp := extractJSONStringValue(input, "file_path"); fp != "" {
+	for _, edit := range edits {
+		if fp := decodeJSONString(edit["file_path"]); fp != "" {
 			paths = append(paths, fp)
 		}
 	}
 	return paths
 }
 
-// extractJSONStringValue extracts a single string value for a key from JSON.
-func extractJSONStringValue(jsonStr, key string) string {
-	search := `"` + key + `"`
-	idx := strings.Index(jsonStr, search)
-	if idx == -1 {
+func decodeJSONString(raw json.RawMessage) string {
+	var value string
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
 		return ""
 	}
-	// Skip past key and colon.
-	rest := jsonStr[idx+len(search):]
-	rest = strings.TrimLeft(rest, " \t\n\r:")
-	if len(rest) == 0 || rest[0] != '"' {
-		return ""
-	}
-	rest = rest[1:]
-	end := strings.IndexByte(rest, '"')
-	if end == -1 {
-		return ""
-	}
-	return rest[:end]
+	return value
 }
 
-// extractJSONStringValues extracts all string values for a key from JSON.
+// extractJSONStringValue extracts a single string value for a key from JSON.
+func extractJSONStringValue(jsonStr, key string) string {
+	var object map[string]json.RawMessage
+	if json.Unmarshal([]byte(jsonStr), &object) != nil {
+		return ""
+	}
+	return decodeJSONString(object[key])
+}
+
 func extractJSONStringValues(jsonStr, key string) []string {
+	var object map[string]json.RawMessage
+	if json.Unmarshal([]byte(jsonStr), &object) != nil {
+		return nil
+	}
+	var entries []map[string]json.RawMessage
+	if json.Unmarshal(object["edits"], &entries) != nil {
+		return nil
+	}
 	var values []string
-	search := `"` + key + `"`
-	remaining := jsonStr
-	for {
-		idx := strings.Index(remaining, search)
-		if idx == -1 {
-			break
+	for _, entry := range entries {
+		if value := decodeJSONString(entry[key]); value != "" {
+			values = append(values, value)
 		}
-		rest := remaining[idx+len(search):]
-		rest = strings.TrimLeft(rest, " \t\n\r:")
-		if len(rest) > 0 && rest[0] == '"' {
-			rest = rest[1:]
-			end := strings.IndexByte(rest, '"')
-			if end != -1 {
-				values = append(values, rest[:end])
-			}
-		}
-		remaining = rest
 	}
 	return values
 }
 
-// isGitAvailable checks if git is usable in the current directory.
 func isGitAvailable() bool {
 	_, err := exec.LookPath("git")
 	if err != nil {

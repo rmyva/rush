@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/PHPCraftdream/rush/internal/fsext"
 	"github.com/spf13/cobra"
 )
 
@@ -201,7 +202,7 @@ func stripLegacyBlockFromCLAUDEMd(cwd string) error {
 		fmt.Fprintf(os.Stderr, "stripped %d legacy crush-claude-init block(s) and removed now-empty %s\n", len(matches), path)
 		return nil
 	}
-	if err := os.WriteFile(path, []byte(stripped+"\n"), 0o644); err != nil {
+	if err := fsext.AtomicWriteFile(path, []byte(stripped+"\n"), 0o644); err != nil {
 		return fmt.Errorf("failed to write %s: %w", path, err)
 	}
 	fmt.Fprintf(os.Stderr, "stripped %d legacy crush-claude-init block(s) from %s\n", len(matches), path)

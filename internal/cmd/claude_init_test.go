@@ -88,6 +88,26 @@ func TestClaudeInit_NoCLAUDEMd_StillInstallsSlashCommand(t *testing.T) {
 	assert.NotContains(t, got, "codex queue")
 }
 
+func TestClaudeInit_StripsLegacyBlockByReplacingInode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, claudeMdFile)
+	alias := filepath.Join(dir, "hardlink")
+	content := "# Project\n\n<!-- crush-claude-init:v8 -->\nlegacy\n<!-- /crush-claude-init -->\n\n# Keep\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	if err := os.Link(path, alias); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+
+	err := stripLegacyBlockFromCLAUDEMd(dir)
+	require.NoError(t, err)
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	aliased, err := os.ReadFile(alias)
+	require.NoError(t, err)
+	assert.NotEqual(t, string(got), string(aliased), "replacement should leave the hard link pointing at the old file")
+	assert.Contains(t, string(aliased), "legacy")
+}
+
 func TestClaudeInit_StripsLegacyBlock_KeepsRestOfFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, claudeMdFile)
