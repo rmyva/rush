@@ -65,6 +65,14 @@ func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session,
 	return cost
 }
 
+func addStepUsageTokens(total int64, usage fantasy.Usage) int64 {
+	partsTotal := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens + usage.OutputTokens
+	if usage.TotalTokens > partsTotal {
+		partsTotal = usage.TotalTokens
+	}
+	return total + partsTotal
+}
+
 // updateSessionTokenCounters writes a new usage snapshot into the session
 // without overwriting accumulated counters with zero. Fork merge note: from
 // origin/main 74e6e378 "fix(agent): harden fallback usage accounting".

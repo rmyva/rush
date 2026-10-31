@@ -69,8 +69,8 @@ type turnCheckpointWriter struct {
 	sessionLock *sync.Mutex
 	assistant   **message.Message
 
-	// stall is the turn's stall clock; each checkpoint persist tick is a
-	// durable progress point.
+	// stall is the turn's stall clock; each successful changed checkpoint
+	// persist is a durable progress point.
 	stall *stallClock
 
 	mu          sync.Mutex
@@ -131,7 +131,6 @@ func (cp *turnCheckpointWriter) start() {
 			case <-cp.genCtx.Done():
 				return
 			case <-ticker.C:
-				cp.stall.markProgress() // checkpoint tick counts as durable progress
 				// stop() closes `stop` BEFORE cancelling writeCtx
 				// (see its comment), so a tick that was already queued
 				// while the previous write was blocked can become ready
@@ -205,9 +204,11 @@ func (cp *turnCheckpointWriter) start() {
 							)
 						}
 					} else {
-						// Update our local coalescing state on successful write.
+						// Update our local coalescing state and stall clock only
+						// after the changed snapshot has been durably written.
 						lastPartsLen = currentPartsLen
 						lastContentBytes = currentContentBytes
+						cp.stall.markProgress()
 					}
 				}
 			}

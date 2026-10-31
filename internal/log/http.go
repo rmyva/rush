@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -112,7 +113,7 @@ func (r *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				"attempt", attempt,
 				"delay", delay,
 				"method", req.Method,
-				"url", req.URL,
+				"url", redactRequestURL(req.URL),
 			)
 			select {
 			case <-time.After(delay):
@@ -164,6 +165,50 @@ type HTTPRoundTripLogger struct {
 	Transport http.RoundTripper
 }
 
+func redactRequestURL(raw *url.URL) string {
+	if raw == nil {
+		return ""
+	}
+	redacted := *raw
+	if redacted.User != nil {
+		redacted.User = url.User("[REDACTED]")
+	}
+	redacted.RawQuery = redactURLQuery(redacted.RawQuery)
+	return redacted.String()
+}
+
+// redactURLQuery redacts sensitive values without parsing and re-encoding the
+// entire query. Keeping each raw pair intact preserves duplicate parameters,
+// ordering, escaping, and malformed-but-forwarded query text in the logged URL.
+func redactURLQuery(rawQuery string) string {
+	if rawQuery == "" {
+		return ""
+	}
+	parts := strings.Split(rawQuery, "&")
+	for i, part := range parts {
+		key, _, _ := strings.Cut(part, "=")
+		decodedKey, err := url.QueryUnescape(key)
+		if err != nil {
+			continue
+		}
+		switch strings.ToLower(decodedKey) {
+		case "key", "api_key", "token", "access_token", "signature", "sig", "secret", "password":
+			parts[i] = key + "=%5BREDACTED%5D"
+		}
+	}
+	return strings.Join(parts, "&")
+}
+
+func redactRequestError(err error, raw *url.URL) string {
+	if err == nil {
+		return ""
+	}
+	if raw == nil {
+		return err.Error()
+	}
+	return strings.ReplaceAll(err.Error(), raw.String(), redactRequestURL(raw))
+}
+
 // RoundTrip implements http.RoundTripper with streaming-safe debug logging.
 //
 // When debug logging is not enabled at the current slog level, request and
@@ -209,11 +254,11 @@ func (h *HTTPRoundTripLogger) RoundTrip(req *http.Request) (*http.Response, erro
 		}
 		slog.Debug("HTTP Request",
 			"method", req.Method,
-			"url", req.URL,
+			"url", redactRequestURL(req.URL),
 			"body", redactBodySecrets(prettyBody(preview))+truncated,
 		)
 	} else if debugEnabled {
-		slog.Debug("HTTP Request", "method", req.Method, "url", req.URL)
+		slog.Debug("HTTP Request", "method", req.Method, "url", redactRequestURL(req.URL))
 	}
 
 	start := time.Now()
@@ -222,9 +267,9 @@ func (h *HTTPRoundTripLogger) RoundTrip(req *http.Request) (*http.Response, erro
 	if err != nil {
 		slog.Error("HTTP request failed",
 			"method", req.Method,
-			"url", req.URL,
+			"url", redactRequestURL(req.URL),
 			"duration_ms", duration.Milliseconds(),
-			"error", err,
+			"error", redactRequestError(err, req.URL),
 		)
 		return resp, err
 	}

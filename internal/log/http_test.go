@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -477,6 +478,59 @@ func TestRedactBodySecrets_SSE(t *testing.T) {
 	}
 	if !strings.Contains(got, "[REDACTED]") {
 		t.Errorf("expected [REDACTED] marker:\n%s", got)
+	}
+}
+
+func TestHTTPRoundTripLogger_RedactsRequestURL(t *testing.T) {
+	prevLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	logger := &HTTPRoundTripLogger{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, errors.New("request failed for " + req.URL.String())
+	})}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+		"http://user-sentinel:pass-sentinel@127.0.0.1:1/path?KEY=key-sentinel&Api_Key=api-key-sentinel&Token=token-sentinel&ACCESS_TOKEN=access-sentinel&Signature=signature-sentinel&sig=sig-sentinel&Secret=secret-sentinel&Password=password-sentinel&public=visible-value&x=one%20two&x=three", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.URL.RawQuery += "&&bad=%zz"
+	_, _ = logger.RoundTrip(req)
+
+	logged := logBuf.String()
+	for _, secret := range []string{"user-sentinel", "pass-sentinel", "key-sentinel", "api-key-sentinel", "token-sentinel", "access-sentinel", "signature-sentinel", "sig-sentinel", "secret-sentinel", "password-sentinel"} {
+		if strings.Contains(logged, secret) {
+			t.Errorf("URL secret %q leaked in debug log:\n%s", secret, logged)
+		}
+	}
+	for _, preserved := range []string{"public=visible-value", "x=one%20two&x=three&&bad=%zz"} {
+		if !strings.Contains(logged, preserved) {
+			t.Errorf("expected query semantics %q to remain visible:\n%s", preserved, logged)
+		}
+	}
+	if !strings.Contains(logged, "error=\"request failed for http://%5BREDACTED%5D@127.0.0.1:1/path?") {
+		t.Errorf("transport error did not contain redacted URL:\n%s", logged)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestRedactRequestURL_PreservesQuerySemantics(t *testing.T) {
+	raw, err := url.Parse("https://user:pass@example.com/p?x=one%20two&x=three&API_KEY=first&api_key=second&&bad=%zz&flag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := redactRequestURL(raw)
+	for _, want := range []string{"x=one%20two&x=three", "API_KEY=%5BREDACTED%5D&api_key=%5BREDACTED%5D", "&&bad=%zz&flag"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("redacted URL %q missing preserved query fragment %q", got, want)
+		}
+	}
+	if strings.Contains(got, "first") || strings.Contains(got, "second") || strings.Contains(got, "user:pass") {
+		t.Errorf("redacted URL leaked credentials: %q", got)
 	}
 }
 

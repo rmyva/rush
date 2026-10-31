@@ -14,6 +14,26 @@ import (
 	"charm.land/fantasy"
 )
 
+func TestStreamOutputRetentionIsBounded(t *testing.T) {
+	s := &StreamSession{}
+	s.appendOutput([]byte("prefix"))
+	chunk := strings.Repeat("z", maxRetainedOutputBytes)
+	s.appendOutput([]byte(chunk))
+
+	got := s.Output()
+	keep := maxRetainedOutputBytes - len(outputTruncationMarker)
+	want := "prefix" + chunk[:keep-len("prefix")] + outputTruncationMarker
+	if string(got) != want {
+		t.Fatalf("retained output does not preserve the prefix of the final chunk: length=%d", len(got))
+	}
+
+	s.appendOutput([]byte("later write"))
+	again := s.Output()
+	if len(again) != maxRetainedOutputBytes || string(again) != want {
+		t.Fatalf("retained output changed on writes after truncation: length=%d", len(again))
+	}
+}
+
 func TestRetainedStreamLifetime(t *testing.T) {
 	for _, pty := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pty=%v", pty), func(t *testing.T) {

@@ -513,6 +513,12 @@ func (c *coordinator) runInternal(ctx context.Context, sessionID string, prompt 
 		mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(sessionID, model, providerCfg)
 
 		pinnedSmart := model
+		// A 401 is retried as the same logical turn, so reuse the user
+		// message created by the first execution rather than creating a
+		// duplicate during the refreshed-client execution.
+		if createdUserMessageID != "" {
+			trackCall.ExistingMessageID = createdUserMessageID
+		}
 		newCall := SessionAgentCall{
 			SessionID:            trackCall.SessionID,
 			Prompt:               trackCall.Prompt,

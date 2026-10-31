@@ -260,6 +260,13 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 		}
 	}
 
+	if a.coord != nil {
+		if err := a.coord.checkLivePeakHours(model.Model.Provider()); err != nil {
+			// Detached background work has no caller to notify; refuse quietly.
+			return
+		}
+	}
+
 	if !a.tryAdmitRunWg() {
 		return
 	}
@@ -311,11 +318,24 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 		return
 	}
 
+	// A successful replay has already incurred provider cost. Record it even
+	// when this charge crosses maxCost; the cap prevents future calls, not
+	// accounting for a response already paid for.
 	if !a.recordCacheKeepAliveCost(ctx, sessionID, model, result, maxCost) {
-		// The session crossed maxCost while this replay was in flight (or
-		// the re-check itself couldn't be verified) — treated the same as
-		// the up-front max-cost skip: no charge, no rearm.
+		// The charge could not be persisted; do not rearm and risk further
+		// unaccounted provider spend.
 		return
+	}
+
+	if maxCost > 0 {
+		checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		budget, err := a.sessions.SubtreeBudget(checkCtx, sessionID)
+		checkCancel()
+		if err != nil || budget >= maxCost {
+			// The response has been charged above, but don't schedule another
+			// paid request once the subtree cap is met (or unverifiable).
+			return
+		}
 	}
 
 	if extension+1 >= cacheKeepAliveMaxExtensions {
@@ -387,21 +407,12 @@ func (a *sessionAgent) fireCacheKeepAliveHB(hb heartbeat.Context, sessionID stri
 // to them here would corrupt that snapshot: whichever of the replay and the
 // next real turn's own usage update lands last would silently win.
 //
-// Returns false when either:
-//   - maxCost blocked the charge — the session crossed its cap sometime
-//     between fireCacheKeepAlive's up-front check and the replay actually
-//     completing. The charge is now refused atomically when cost + delta
-//     would meet or exceed maxCost (the check lives inside the UPDATE itself,
-//     so concurrent chargers cannot jointly overshoot); or
-//   - the charge itself failed (IncrementCostIfUnderMax returned an error, e.g.
-//     a DB outage) — the accounting is now unreliable for this session, so the
-//     caller must not keep firing unbilled replays against it.
-//
-// The caller must treat false the same as the up-front skip in both cases:
-// no charge, and no rearm — a session already over its cap, or one whose
-// cost we just failed to persist, must not keep spending on future
-// keep-alive extensions either.
-func (a *sessionAgent) recordCacheKeepAliveCost(ctx context.Context, sessionID string, model Model, result *fantasy.AgentResult, maxCost float64) bool {
+// Returns false only when the charge itself failed (IncrementCost returned an
+// error, e.g. a DB outage) — the accounting is now unreliable for this session,
+// so the caller must not keep firing unbilled replays against it. A successful
+// response is always charged even if it crosses maxCost: maxCost gates future
+// replays, but cannot erase the cost of a provider response already received.
+func (a *sessionAgent) recordCacheKeepAliveCost(ctx context.Context, sessionID string, model Model, result *fantasy.AgentResult, _ float64) bool {
 	if result == nil {
 		return true
 	}
@@ -440,25 +451,16 @@ func (a *sessionAgent) recordCacheKeepAliveCost(ctx context.Context, sessionID s
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// K-2 (task #782): the budget check and the charge share one
-	// transaction on the single-connection writer pool:
-	// IncrementCostIfUnderMax reads the subtree budget (GetSubtreeSpent
-	// and GetSessionCostBase) and lands the charge (IncrementSessionCost)
-	// inside that transaction. Two concurrent chargers — a real turn and
-	// a replay, or two replays — cannot both pass: the writer pool has a
-	// single connection, so the second sees the first one's
-	// already-updated cost_self and is refused. The budget is the SUBTREE
-	// budget (#1130), not this node's own cost column.
-	sess, charged, err := a.sessions.IncrementCostIfUnderMax(ctx, sessionID, cost, maxCost)
+	// The preflight max-cost check and replay charge are separate: a replay
+	// that has already completed is always recorded, even if a concurrent
+	// charge crosses the cap. This post-charge check prevents rearming once
+	// the subtree budget reaches the cap.
+	sess, err := a.sessions.IncrementCost(ctx, sessionID, cost)
 	if err != nil {
 		slog.Error("cache keep-alive: failed to accrue replay cost", "session_id", sessionID, "err", err)
 		return false
 	}
-	if !charged {
-		slog.Debug("cache keep-alive: session crossed max cost while the replay was in flight; skipping charge", "session_id", sessionID, "cost", sess.OwnCost, "max_cost", maxCost)
-		return false
-	}
-	slog.Debug("cache keep-alive: replay cost recorded", "session_id", sessionID, "cost", cost)
+	slog.Debug("cache keep-alive: replay cost recorded", "session_id", sessionID, "cost", cost, "own_cost", sess.OwnCost)
 	return true
 }
 

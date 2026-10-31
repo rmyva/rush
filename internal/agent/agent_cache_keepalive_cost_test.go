@@ -15,6 +15,7 @@ import (
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -137,6 +138,34 @@ func TestFireCacheKeepAlive_RecordsReplayCost(t *testing.T) {
 	require.Zero(t, updated.CompletionTokens, "replay must not touch the CompletionTokens snapshot")
 }
 
+func TestFireCacheKeepAlive_SkipsDuringProviderPeakHours(t *testing.T) {
+	restoreKeepAliveVars(t, 20*time.Millisecond, 3)
+	a, env := newKeepAliveAgent(t)
+	t.Cleanup(func() { a.CancelAll() })
+
+	const providerID = anthropic.Name
+	w := peakWindowAroundNow()
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	cfg.Config().Providers.Set(providerID, config.ProviderConfig{ID: providerID, PeakHours: w})
+	a.coord = &coordinator{cfg: cfg}
+
+	lm := &keepAliveCountingModel{provider: providerID}
+	model := testKeepAliveModel(Model{Model: lm})
+	sess, err := env.sessions.Create(t.Context(), "keepalive peak-hours test")
+	require.NoError(t, err)
+	a.scheduleCacheKeepAlive(sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
+
+	// The short timer deterministically reaches checkLivePeakHours; an
+	// in-window configured provider must be refused before Stream is called.
+	require.Eventually(t, func() bool {
+		_, pending := a.cacheKeepAlive.Get(sess.ID)
+		_, inFlight := a.cacheKeepAliveInFlight.Get(sess.ID)
+		return !pending && !inFlight
+	}, 2*time.Second, 5*time.Millisecond, "peak-hours refusal should consume the scheduled replay")
+	require.Zero(t, lm.calls.Load(), "keepalive request must be skipped inside provider peak hours")
+}
+
 // TestFireCacheKeepAlive_SkipsWhenSessionAtMaxCost proves a session already
 // at or over its MaxCost cap gets no replay call at all, and is not
 // rescheduled — mirroring agent_turn.go's own max-cost abort being terminal.
@@ -167,14 +196,12 @@ func TestFireCacheKeepAlive_SkipsWhenSessionAtMaxCost(t *testing.T) {
 	require.InDelta(t, 5.0, updated.OwnCost, 1e-9, "cost must remain unchanged, no replay spend")
 }
 
-// TestFireCacheKeepAlive_SkipsChargeWhenSessionCrossesMaxCostMidFlight proves
-// the fix for a real TOCTOU gap (2026-08-26 review): the up-front maxCost
-// check only bounds the wait BEFORE the replay call, which can itself take
-// up to cacheKeepAliveCallTimeout (30s). A concurrent real turn's own spend
-// landing during that window must still be caught before the replay's own
-// cost is charged, and must also block the next rearm — a session already
-// over its cap must not keep spending on further extensions.
-func TestFireCacheKeepAlive_SkipsChargeWhenSessionCrossesMaxCostMidFlight(t *testing.T) {
+// TestFireCacheKeepAlive_RecordsReplayCostEvenWhenItCrossesMaxCost pins the
+// accounting rule: once a paid response succeeds, a concurrent spend crossing
+// maxCost does not erase the replay's incurred cost; the cap only prevents
+// subsequent replays. Revert-check: restoring IncrementCostIfUnderMax/return
+// on !charged leaves OwnCost at maxCost and fails this test.
+func TestFireCacheKeepAlive_RecordsReplayCostEvenWhenItCrossesMaxCost(t *testing.T) {
 	restoreKeepAliveVars(t, 20*time.Millisecond, 3)
 	a, env := newKeepAliveAgent(t)
 	t.Cleanup(func() { a.CancelAll() })
@@ -207,11 +234,17 @@ func TestFireCacheKeepAlive_SkipsChargeWhenSessionCrossesMaxCostMidFlight(t *tes
 	_, err = env.sessions.IncrementCost(t.Context(), sess.ID, maxCost)
 	require.NoError(t, err)
 
+	// A rearmed entry must outlive the assertion below: with the short test
+	// interval it would fire, hit the up-front cap check and delete itself
+	// before the check, hiding a missing post-charge cap guard. The write is
+	// ordered before the replay goroutine's read by close(lm.proceed).
+	cacheKeepAliveInterval = time.Hour
+
 	close(lm.proceed)
 
-	// The replay completes successfully (Stream returned real usage, no
-	// error) — but its own cost must NOT be layered on top of the
-	// already-over-cap session, and it must not rearm.
+	// The successful response was already paid for, so its replay cost is
+	// recorded even though the concurrent charge pushed the session over cap.
+	// It must still not rearm: the max-cost guard prevents future requests.
 	require.Eventually(t, func() bool {
 		_, stillInFlight := a.cacheKeepAliveInFlight.Get(sess.ID)
 		return !stillInFlight
@@ -223,8 +256,10 @@ func TestFireCacheKeepAlive_SkipsChargeWhenSessionCrossesMaxCostMidFlight(t *tes
 
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.InDelta(t, maxCost, updated.OwnCost, 1e-9,
-		"the replay's own cost must not be charged on top of an already-over-cap session")
+	// A response that crosses the cap is still already-paid provider usage;
+	// record it in the ledger even though the cap blocks future replays.
+	require.InDelta(t, maxCost+0.001, updated.OwnCost, 1e-9,
+		"a paid replay response must be accounted even when it crosses max cost")
 }
 
 // TestCancelCacheKeepAlive_CancelsInFlightReplay proves an in-flight replay
@@ -486,20 +521,12 @@ func TestFireCacheKeepAlive_CancelBetweenErrCheckAndRearmDoesNotRearm(t *testing
 		"the stale fire must not leave a re-armed pending entry behind")
 }
 
-// TestFireCacheKeepAlive_ChargeRefusedWhenDeltaWouldCrossMaxCost pins the K-2
-// defect at the wiring level: recordCacheKeepAliveCost used to do Get →
-// `sess.Cost >= maxCost` → IncrementCost, a read-then-write pair whose check
-// only compared the EXISTING cost against the cap and never accounted for the
-// delta about to be charged — so a charge that would itself cross the remaining
-// headroom landed anyway and overshot maxCost (the same missing delta-aware
-// predicate that let two racing chargers jointly overshoot). The fix is the
-// single atomic a.sessions.IncrementCostIfUnderMax(ctx, id, cost, maxCost) call.
-//
-// The RED behaviour (old code) was final cost 0.14 > maxCost 0.10 (overshoot).
-// The fixed code's delta-aware predicate also closes the concurrent two-charger
-// overshoot scenario — SQLite serializes writers, so only one racing charge can
-// land when their combined delta would cross max.
-func TestFireCacheKeepAlive_ChargeRefusedWhenDeltaWouldCrossMaxCost(t *testing.T) {
+// TestFireCacheKeepAlive_ChargeRecordedWhenDeltaCrossesMaxCost pins the K-2
+// accounting rule at the wiring level: the replay's preflight check may pass
+// while the session is below maxCost, but once the provider has returned a paid
+// response, that cost must be recorded even when it crosses the cap. The cap
+// prevents future replays; it cannot erase the cost already incurred.
+func TestFireCacheKeepAlive_ChargeRecordedWhenDeltaCrossesMaxCost(t *testing.T) {
 	restoreKeepAliveVars(t, 20*time.Millisecond, 1)
 	a, env := newKeepAliveAgent(t)
 	t.Cleanup(func() { a.CancelAll() })
@@ -518,7 +545,7 @@ func TestFireCacheKeepAlive_ChargeRefusedWhenDeltaWouldCrossMaxCost(t *testing.T
 	model := testKeepAliveModel(Model{Model: lm})
 	model.CatwalkCfg.CostPer1MIn = 100.0 // replay cost = 100/1e6*500 = 0.05
 
-	const maxCost = 0.10 // up-front check passes (0.09 < 0.10), charge must be refused (0.09 + 0.05 >= 0.10)
+	const maxCost = 0.10 // up-front check passes (0.09 < 0.10); the paid response still gets charged across the cap
 
 	a.scheduleCacheKeepAlive(sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, maxCost)
 
@@ -530,11 +557,11 @@ func TestFireCacheKeepAlive_ChargeRefusedWhenDeltaWouldCrossMaxCost(t *testing.T
 
 	updated, err := env.sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.InDelta(t, 0.09, updated.OwnCost, 1e-9,
-		"a charge whose delta would cross the remaining maxCost headroom must be refused atomically, not layered on top (K-2: 0.09 + 0.05 >= 0.10)")
+	require.InDelta(t, 0.14, updated.OwnCost, 1e-9,
+		"the paid replay response must be accounted even when its cost crosses maxCost")
 
 	require.EqualValues(t, 1, lm.calls.Load(),
-		"refused charge returns false, so no rearm may follow")
+		"the cap is checked after accounting, so a crossing charge must stop rearming")
 
 	_, scheduled := a.cacheKeepAlive.Get(sess.ID)
 	require.False(t, scheduled)
@@ -567,8 +594,8 @@ func TestFireCacheKeepAlive_ChargeFailureStopsRearm(t *testing.T) {
 	// Simulate DB outage by closing the connection BEFORE scheduling.
 	env.conn.Close()
 
-	// maxCost=0 (unlimited) so the charge goes down IncrementCostIfUnderMax's
-	// plain IncrementCost path, which will error on the closed DB.
+	// maxCost=0 (unlimited) so the charge goes through IncrementCost, which will
+	// error on the closed DB.
 	a.scheduleCacheKeepAlive(sess.ID, model, []fantasy.Message{fantasy.NewUserMessage("hi")}, nil, nil, 0)
 
 	require.Eventually(t, func() bool {

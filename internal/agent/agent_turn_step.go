@@ -671,6 +671,7 @@ func (ts *turnStream) applyStepUsage(stepResult fantasy.StepResult) (session.Ses
 	// recordMessageUsage, so InputTokens is exclusive-of-cache for
 	// every provider before either consumer sees it.
 	usage = normalizeProviderUsage(ts.smartModel.Model.Provider(), usage)
+	ts.runTotalTokens = addStepUsageTokens(ts.runTotalTokens, usage)
 	costDelta := ts.a.updateSessionUsage(ts.smartModel, &updatedSession, usage, ts.a.openrouterCost(stepResult.ProviderMetadata))
 	// Heartbeat usage: one add per accounted step, executing model identity (design pt. 4).
 	addHeartbeatUsage(ts.genCtx, ts.smartModel.Model.Provider(), ts.smartModel.Model.Model(), usage, costDelta)
@@ -763,7 +764,7 @@ func (ts *turnStream) enforceRunawayCaps(updatedSession session.Session) error {
 		// flag above, a transient DB error is no evidence the budget is
 		// spent. The rush run loop re-checks on its own cadence.
 	}
-	totalTokens := updatedSession.PromptTokens + updatedSession.CompletionTokens
+	totalTokens := ts.runTotalTokens
 	if ts.call.MaxTokens > 0 && totalTokens > ts.call.MaxTokens {
 		slog.Warn(
 			"agent: aborting — max-tokens exceeded",

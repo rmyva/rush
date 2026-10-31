@@ -602,15 +602,19 @@ func mcpBashBlockFuncs() []shell.BlockFunc {
 
 func sliceLines(content string, start, end int) string {
 	lines := strings.Split(content, "\n")
+	first := 0
 	if start > 0 {
-		start-- // convert to 0-based
-		if start >= len(lines) {
+		first = start - 1 // convert 1-based start to 0-based
+		if first >= len(lines) {
 			return ""
 		}
-		lines = lines[start:]
 	}
-	if end > 0 && end <= len(lines) {
-		lines = lines[:end]
+	last := len(lines)
+	if end > 0 && end < last {
+		last = end // end_line is an inclusive 1-based line number
 	}
-	return strings.Join(lines, "\n")
+	if last < first {
+		return ""
+	}
+	return strings.Join(lines[first:last], "\n")
 }

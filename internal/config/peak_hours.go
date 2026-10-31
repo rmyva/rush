@@ -76,7 +76,7 @@ func (w PeakHoursWindow) InPeakHours(now time.Time) bool {
 func (w PeakHoursWindow) EndTimeToday(now time.Time) time.Time {
 	endM, _ := parseHHMM(w.End)
 	y, m, d := now.Date()
-	end := time.Date(y, m, d, 0, 0, 0, 0, now.Location()).Add(time.Duration(endM) * time.Minute)
+	end := time.Date(y, m, d, endM/60, endM%60, 0, 0, now.Location())
 	startM, _ := parseHHMM(w.Start)
 	if startM > endM && now.Hour()*60+now.Minute() >= startM {
 		// Overnight, pre-midnight leg: end is tomorrow.

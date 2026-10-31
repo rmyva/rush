@@ -222,6 +222,56 @@ func TestRunInternal_NoRetryAfterAdmissionRefusal_WithForeignStalledMessage(t *t
 	assert.Contains(t, lastAssistantText, "B's partial answer", "caller B's stalled message must remain the last assistant row, untouched")
 }
 
+func TestRunInternal_UnauthorizedRetryReusesUserMessage(t *testing.T) {
+	const providerID = "test-401-reuse"
+	const prompt = "retry the unauthorized request"
+	t.Setenv("TEST_401_REUSE_KEY", "fresh-key")
+
+	env := testEnv(t)
+	cfg, err := config.Init(env.workingDir, "", false)
+	require.NoError(t, err)
+	providerCfg := config.ProviderConfig{
+		ID: providerID, Type: "openai", APIKey: "stale-key", APIKeyTemplate: "$TEST_401_REUSE_KEY",
+		Models: []catwalk.Model{{ID: "test-model", Name: "Test Model", DefaultMaxTokens: 4096}},
+	}
+	cfg.Config().Providers.Set(providerID, providerCfg)
+	sel := config.SelectedModel{Provider: providerID, Model: "test-model"}
+	cfg.Config().Models[config.SelectedModelTypeSmart] = sel
+	cfg.Config().Models[config.SelectedModelTypeFast] = sel
+	coord := &coordinator{
+		cfg: cfg, sessions: env.sessions, messages: env.messages,
+		modelCache: csync.NewMap[string, cachedModelPair](),
+	}
+	sess, err := env.sessions.Create(t.Context(), "401-reuse-test")
+	require.NoError(t, err)
+
+	var createdUserMsgID string
+	callCount := 0
+	agent := newMockAgent(providerID, 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		callCount++
+		if callCount == 1 {
+			require.Empty(t, call.ExistingMessageID)
+			userMsg, err := env.messages.Create(t.Context(), sess.ID, message.CreateMessageParams{
+				Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: prompt}},
+			})
+			require.NoError(t, err)
+			createdUserMsgID = userMsg.ID
+			require.NotNil(t, call.OnUserMessageCreated)
+			call.OnUserMessageCreated(userMsg.ID)
+			return nil, &fantasy.ProviderError{StatusCode: http.StatusUnauthorized, Message: "stale credential"}
+		}
+		require.Equal(t, createdUserMsgID, call.ExistingMessageID, "401 retry must reuse the user message")
+		return agentResultWithText("authorized after refresh"), nil
+	})
+	coord.currentAgent = agent
+	pinned, err := coord.resolveSessionModels(t.Context(), sess.ID)
+	require.NoError(t, err)
+	result, err := coord.runInternal(t.Context(), sess.ID, prompt, pinned)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 2, callCount)
+}
+
 // TestRunInternal_RetryReusesUserMessage_NoDuplicate reproduces a real
 // incident: a session where the same prompt appeared multiple times in
 // history after transient provider failures. Each retry created a fresh

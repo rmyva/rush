@@ -20,6 +20,25 @@ import (
 	gopty "github.com/aymanbagabas/go-pty"
 )
 
+func cliEventLogFields(raw []byte, rawEnabled bool) []any {
+	if rawEnabled {
+		return []any{"raw", string(raw)}
+	}
+	var event struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(raw, &event)
+	switch event.Type {
+	case "system", "assistant", "user", "result", "stream_event",
+		"init", "message", "thread.started", "turn.started", "item.started",
+		"item.updated", "item.completed", "turn.completed", "turn.failed", "error":
+		// These are known CLI protocol event names, not arbitrary payload text.
+	default:
+		event.Type = "unknown"
+	}
+	return []any{"type", event.Type, "bytes", len(raw)}
+}
+
 func (m *cliModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
 	s, err := m.StartStream(ctx, call)
 	if err != nil {
@@ -732,7 +751,13 @@ func (m *cliModel) StartStream(ctx context.Context, call fantasy.Call) (*StreamS
 				// Strip ANSI/VT sequences that PTY drivers (especially Windows ConPTY)
 				// inject into the output stream. JSON parsers need clean bytes.
 				raw := res.raw
-				slog.Debug("cliprovider: raw line", "raw", string(raw))
+				// REVERT CHECK: remove this opt-in branch and raw CLI payloads
+				// are written to debug logs even when raw-prompt logging is off.
+				if logRawPromptEnabled() {
+					slog.Debug("cliprovider: raw line", "raw", string(raw))
+				} else {
+					slog.Debug("cliprovider: CLI event", cliEventLogFields(raw, false)...)
+				}
 				line := bytes.TrimSpace(ansiEscape.ReplaceAll(raw, nil))
 				diagnostics.add(line)
 				failure.add(failureName, line)

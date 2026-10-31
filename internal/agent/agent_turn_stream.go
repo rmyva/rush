@@ -150,6 +150,7 @@ type turnStream struct {
 	shouldSummarize     bool
 	silentCompactNeeded bool
 	currentSession      session.Session
+	runTotalTokens      int64
 
 	// progress is the in-turn progress guard's state (turn_progress_guard.go).
 	// Scoped to ONE turn — a new turn starts from zero, cross-turn chains are

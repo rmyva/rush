@@ -3,6 +3,7 @@ package config
 import (
 	"testing"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/stretchr/testify/require"
 )
@@ -112,6 +113,22 @@ func TestParseHHMM_NonDigitBytesRejected(t *testing.T) {
 
 	// Sanity: a well-formed window is still accepted.
 	require.NoError(t, PeakHoursWindow{Start: "09:00", End: "18:00"}.Validate())
+}
+
+func TestPeakHoursWindow_EndTimeTodayPreservesLocalWallClockAcrossDST(t *testing.T) {
+	t.Parallel()
+
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	// On the spring-forward day, adding absolute minutes to local midnight
+	// lands at 21:00 rather than the configured 20:00 local wall time.
+	now := time.Date(2026, time.March, 8, 12, 0, 0, 0, loc)
+	window := PeakHoursWindow{Start: "10:00", End: "20:00"}
+	got := window.EndTimeToday(now)
+	require.Equal(t, 20, got.Hour())
+	require.Equal(t, 0, got.Minute())
+	require.Equal(t, loc, got.Location())
 }
 
 func TestPeakHoursWindow_EndTimeToday(t *testing.T) {

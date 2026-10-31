@@ -32,17 +32,21 @@ type StreamResult struct {
 	ScanErr error
 }
 
+const maxRetainedOutputBytes = 1024 * 1024
+const outputTruncationMarker = "\n...(output truncated; retained output capped)\n"
+
 type StreamSession struct {
-	stream   fantasy.StreamResponse
-	done     chan struct{}
-	notify   chan struct{}
-	mu       sync.Mutex
-	lines    []scanResult
-	output   []byte
-	result   StreamResult
-	stopOnce sync.Once
-	stopDone chan struct{}
-	proc     procHandle
+	stream          fantasy.StreamResponse
+	done            chan struct{}
+	notify          chan struct{}
+	mu              sync.Mutex
+	lines           []scanResult
+	output          []byte
+	outputTruncated bool
+	result          StreamResult
+	stopOnce        sync.Once
+	stopDone        chan struct{}
+	proc            procHandle
 }
 
 func (s *StreamSession) Stream() fantasy.StreamResponse { return s.stream }
@@ -142,7 +146,7 @@ func newStreamSession(proc procHandle) *StreamSession {
 		stderr, err := proc.wait()
 		if proc.stderrRaw != nil {
 			s.mu.Lock()
-			s.output = append(s.output, proc.stderrRaw()...)
+			s.appendOutput(proc.stderrRaw())
 			s.mu.Unlock()
 		}
 		s.result = StreamResult{Stderr: stderr, Err: err, ScanErr: scanner.Err()}
@@ -156,9 +160,35 @@ func newStreamSession(proc procHandle) *StreamSession {
 
 type streamCapture struct{ session *StreamSession }
 
+func (s *StreamSession) appendOutput(p []byte) {
+	if s.outputTruncated || len(p) == 0 {
+		return
+	}
+	marker := []byte(outputTruncationMarker)
+	remaining := maxRetainedOutputBytes - len(s.output)
+	if len(p) <= remaining {
+		s.output = append(s.output, p...)
+		return
+	}
+
+	// Reserve marker space, but retain as much as possible from this final
+	// write rather than discarding the entire chunk that crossed the cap.
+	keep := maxRetainedOutputBytes - len(marker)
+	if len(s.output) > keep {
+		s.output = s.output[:keep]
+	}
+	available := keep - len(s.output)
+	if available > len(p) {
+		available = len(p)
+	}
+	s.output = append(s.output, p[:available]...)
+	s.output = append(s.output, marker...)
+	s.outputTruncated = true
+}
+
 func (c streamCapture) Write(p []byte) (int, error) {
 	c.session.mu.Lock()
-	c.session.output = append(c.session.output, p...)
+	c.session.appendOutput(p)
 	c.session.mu.Unlock()
 	return len(p), nil
 }
