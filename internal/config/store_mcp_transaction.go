@@ -66,7 +66,7 @@ func (s *ConfigStore) mutatePendingRemoveMCP(scope Scope, name string) (MCPMutat
 		if evalErr != nil {
 			return evalErr
 		}
-		result.committedMCPInputs = after.mcpInputs
+		result.committedMCPInputs = reconcileMCPInputs(s.loadSnapshot().mcpInputs, after.mcpInputs, result.OldName, result.NewName)
 		return writeErr
 	})
 	if err == nil || mcpCommitWasReconciled(err) {
@@ -128,7 +128,7 @@ func (s *ConfigStore) mutateMCPEnableRollback(scope Scope, name string, token MC
 		}
 		result.NewExists, result.NewConfig, result.NewOrigin = afterValue(after, name)
 		result.committedFingerprints = committedMCPFingerprints(files)
-		result.committedMCPInputs = after.mcpInputs
+		result.committedMCPInputs = reconcileMCPInputs(s.loadSnapshot().mcpInputs, after.mcpInputs, result.OldName, result.NewName)
 		return writeErr
 	})
 	if err == nil || mcpCommitWasReconciled(err) {
@@ -262,7 +262,7 @@ func (s *ConfigStore) mutateMCPWithMode(operation string, scope Scope, oldName, 
 			result.NewExists, result.NewConfig, result.NewOrigin = afterValue(after, oldName)
 		}
 		result.committedFingerprints = committedMCPFingerprints(files)
-		result.committedMCPInputs = after.mcpInputs
+		result.committedMCPInputs = reconcileMCPInputs(s.loadSnapshot().mcpInputs, after.mcpInputs, result.OldName, result.NewName)
 		return writeErr
 	})
 	if err == nil || mcpCommitWasReconciled(err) {
@@ -795,6 +795,21 @@ func configEquivalentMissingMCPInput(path, selected string, expected, actual rel
 		return false
 	}
 	return true
+}
+
+func reconcileMCPInputs(current, committed map[string][32]byte, names ...string) map[string][32]byte {
+	result := maps.Clone(current)
+	if result == nil {
+		result = make(map[string][32]byte)
+	}
+	for _, name := range names {
+		if input, exists := committed[name]; exists {
+			result[name] = input
+		} else {
+			delete(result, name)
+		}
+	}
+	return result
 }
 
 func (s *ConfigStore) publishMCPMutationLocked(result MCPMutationResult) {

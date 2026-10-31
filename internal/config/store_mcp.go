@@ -202,7 +202,7 @@ func (s *ConfigStore) PersistMCPFields(scope Scope, name string, fields map[stri
 			return err
 		}
 		effectiveExists, effective, _ = afterValue(after, name)
-		committedInputs = after.mcpInputs
+		committedInputs = reconcileMCPInputs(s.loadSnapshot().mcpInputs, after.mcpInputs, name)
 		committed = committedMCPFingerprints(files)
 		writeErr := s.writeMCPFileChanges(files, &audit)
 		committed = committedMCPFingerprints(files)
@@ -278,7 +278,7 @@ func (s *ConfigStore) PersistMCPFieldsExact(scope Scope, name string, fields map
 			return err
 		}
 		effectiveExists, effective, _ = afterValue(after, name)
-		committedInputs = after.mcpInputs
+		committedInputs = reconcileMCPInputs(s.loadSnapshot().mcpInputs, after.mcpInputs, name)
 		committed = committedMCPFingerprints(files)
 		writeErr := s.writeMCPFileChanges(files, &audit)
 		committed = committedMCPFingerprints(files)

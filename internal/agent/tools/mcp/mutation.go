@@ -471,6 +471,12 @@ func enableServerWithPersistenceAndInitializerAndRollbackForOwner(
 		retireMCPClient(name, detached)
 		return rollbackErr
 	}
+	admissionOwned := true
+	defer func() {
+		if admissionOwned {
+			admission.done()
+		}
+	}()
 	admission.candidate = true
 	admission.mcpRevision = admissionSnapshot.MCPRevision
 	admission.resolverRevision = admissionSnapshot.ResolverRevision
@@ -490,6 +496,7 @@ func enableServerWithPersistenceAndInitializerAndRollbackForOwner(
 			slog.Error("Failed to enable MCP server", "name", name, "err", err)
 		}
 	}()
+	admissionOwned = false
 	if commitUncertainty != nil {
 		return fmt.Errorf("failed to persist MCP enabled state for %q: %w", name, commitUncertainty)
 	}
