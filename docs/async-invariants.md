@@ -1,5 +1,26 @@
 # Async Invariant Registry
 
+> **Historical record, not a current-runtime specification.** Rush now runs the
+> batch-only runtime; `async_jobs`, `AsyncJobStore`, and `workLedger` below are
+> legacy implementation details. For current facts, enforcement anchors, and
+> evidence, see [jobbatch.md](jobbatch.md),
+> [batch-runtime-migration.md](batch-runtime-migration.md), and the current
+> batch symbols/tests listed below. Historical entries are retained for context
+> only and are not claims about current behavior.
+
+## Current batch-runtime anchors
+
+| Fact | Enforcing symbols | Evidence |
+|---|---|---|
+| A batch root and its task tree are reserved durably; projection applies state updates atomically. | `BatchStore.Reserve` / `ReserveIdentity` and `BatchStore.Project` (`internal/session/batch_store.go`) | `TestBatchReservationLateDBFailureIsAtomic`, `TestBatchProjectionLateFailureRollsBackUpdatesSequenceAndOutbox` (`internal/session/batch_store_test.go`) |
+| Terminal state and recovery belong to the batch store, not the legacy job ledger. | `BatchStore.BatchRecoverDeadHost` / `BatchSweepDeadHosts` (`internal/session/batch_recovery.go`); `BatchStore.BatchRecoverRoot` / `BatchRecoverPass` (`internal/session/batch_recovery_candidates.go`) | `TestBatchRecoveryPassPagesAndRecoversAllRoots`, `TestBatchRecoveryPassCancelledBetweenRootsStopsCleanly`, `TestBatchRecoveryPassVerdictsAndProbeOnce` (`internal/session/batch_recovery_budget_test.go`) |
+| Stop is an owner/runner-fenced durable request; late worker projection cannot undo owner stop. | `BatchStore.BatchRequestStop` (`internal/session/batch_control.go`), `BatchStore.BatchStopOwners` (`internal/session/batch_stop.go`) | `TestBatchStopFence_OwnerRequestSuppressesLateProjection`, `TestBatchStopFence_OwnerHostRootAndRunnerMismatches` (`internal/session/batch_stop_fence_test.go`) |
+| Notice delivery is tied to batch projection and batch debt. | `BatchStore.BatchPullNotices` (`internal/session/batch_pull.go`), `BatchStore.BatchReactionPendingInclusiveDebtRows` (`internal/session/batch_reaction.go`) | `TestBatchDeliveryAcceptedEnvelopeUnchanged`, `TestBatchDeliveryRecoveryInterruptedWithoutEnvelope` (`internal/session/batch_terminal_delivery_test.go`) |
+
+The phase-0/phase-4 ASYNC and DUR rows and the historical findings below retain
+old names and old mechanism descriptions; use the current anchors above rather
+than treating those references as live code.
+
 Phase 0 (`docs/plans/2026-09-27-async-structured-concurrency.md`, "Фаза 0 —
 законы и сетка") of the async structured-concurrency rewrite. Extended by
 phase 4 (`docs/plans/2026-09-28-async-phase4-durable-core.md`, step 8) with
@@ -31,21 +52,8 @@ sec.5, нумерация 3.1–3.8 сохранена); 25 имён тесто�
 слоями R-ACT/R-LOOP-2, заменены их преемниками (полный перечень — в отчёте
 R-DOC). История ниже не переписывалась.
 
-**History:** anchored 2026-09-27 (phase 0); re-anchored across phases
-1–3 (async-phase1/2/3, wakes-stage2, supervision — see git history for the
-per-phase detail this file used to carry inline). Phase 4
-(`d14f930d`..step 8, this revision) replaced the async job's entire
-mechanism: `asyncJobRegistry`/`subAgentOutcomeRegistry`'s in-memory-only
-state, the CLI loop's poll/BFS, and the old in-memory-only reader (`descendant_liveness`) are all gone, superseded by `internal/session/async_job_store.go`'s durable
-`async_jobs`/`session_notices` tables, `internal/agent/work_ledger_*.go`'s
-DB-backed `transition`, and `internal/session/async_job_reader.go`'s
-DB-based cross-process readers. Every ASYNC-0x row below is re-anchored to
-this mechanism; DUR-1…DUR-9 are new rows for the durable core's own laws
-(design doc sec.5, rev. 8), DUR-10/DUR-11 were added by review round 1.
-Each later phase MUST re-anchor every row its changes touch, in the same
-commit that makes the change — a registry that lies about where its law
-lives is worse than no registry (`docs/mcp-invariants.md`'s own rule, which
-this registry copies).
+**Historical pointer:** the phase-0/phase-4 entries below describe superseded async-job behavior; current batch-runtime facts and evidence are above and in `docs/jobbatch.md`.
+
 
 ## Invariants: ASYNC-01…ASYNC-10 (phase 0, re-anchored phase 4)
 

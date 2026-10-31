@@ -35,9 +35,10 @@ type FileLock struct {
 // Deliberately does NOT os.Remove the sidecar file at l.Path — the lock file
 // is left on disk permanently by design. Removing it here would race a
 // concurrent process that acquires the lock (reopens/relocks the same path)
-// between this unlock and the remove: on POSIX that race is harmless (flock
-// is keyed off the inode, so unlinking the path doesn't disturb a
-// still-open fd to the old inode), but on Windows it is not — the file is
+// between this unlock and the remove: on POSIX flock is attached to the inode,
+// so unlinking the path leaves existing descriptors locked but lets a later
+// opener create and lock a different inode at the same path, allowing two
+// holders to believe they own the same lock. On Windows, the file is
 // opened without FILE_SHARE_DELETE, so a concurrent holder's open handle
 // would make the remove fail with a sharing violation, and even a
 // successful delete risks a subsequent opener creating a distinct file

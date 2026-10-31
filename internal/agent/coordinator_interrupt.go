@@ -651,7 +651,7 @@ func (c *coordinator) InterruptAndSend(ctx context.Context, sessionID, prompt st
 	// just queued). When the session is idle there is nothing to interrupt,
 	// and nobody is running who would ever drain a queued call — so we must
 	// start the run ourselves (P0-B).
-	if !c.currentAgent.InterruptAndReplace(sessionID, call) {
+	if !c.agentFor(sessionID).InterruptAndReplace(sessionID, call) {
 		if err := c.startDetachedRun(ctx, call); err != nil {
 			return fmt.Errorf("failed to enqueue interrupt for idle session %s: %w", sessionID, err)
 		}

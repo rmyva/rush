@@ -111,6 +111,7 @@ func (ts *turnStream) handleStreamFailure(
 	ts.mu.Lock()
 	ts.currentAssistant.FinishThinking()
 	toolCalls := ts.currentAssistant.ToolCalls()
+	assistantID := ts.currentAssistant.ID
 	sessionID := ts.currentAssistant.SessionID
 	ts.mu.Unlock()
 	msgs, createErr := ts.a.messages.List(flushCtx, sessionID)
@@ -131,21 +132,7 @@ func (ts *turnStream) handleStreamFailure(
 			}
 		}
 
-		found := false
-		for _, msg := range msgs {
-			if msg.Role == message.Tool {
-				for _, tr := range msg.ToolResults() {
-					if tr.ToolCallID == tc.ID {
-						found = true
-						break
-					}
-				}
-			}
-			if found {
-				break
-			}
-		}
-		if found {
+		if hasToolResultAfterAssistantPosition(msgs, assistantID, tc.ID) {
 			continue
 		}
 		content := "There was an error while executing the tool"
@@ -310,6 +297,33 @@ func (ts *turnStream) handleStreamFailure(
 	// userMessageCreated), so return it directly rather than wrapping
 	// it a second time.
 	return nil, SessionAgentCall{}, false, err
+}
+
+// hasToolResultAfterAssistantPosition only accepts a matching result from the
+// issuing assistant message onward. Tool-call IDs can be reused across turns,
+// so an older result with the same ID must not suppress recovery for this call.
+func hasToolResultAfterAssistantPosition(msgs []message.Message, assistantID, toolCallID string) bool {
+	start := -1
+	for i := range msgs {
+		if msgs[i].ID == assistantID {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return false
+	}
+	for _, msg := range msgs[start:] {
+		if msg.Role != message.Tool {
+			continue
+		}
+		for _, result := range msg.ToolResults() {
+			if result.ToolCallID == toolCallID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // persistFailureFinish writes the error-path final finish. A question the

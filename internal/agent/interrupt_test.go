@@ -84,10 +84,38 @@ func TestCoordinator_InterruptAndSend_UsesInterruptAndReplace(t *testing.T) {
 	assert.Empty(t, mock.cancelled, "InterruptAndSend must not call Cancel anymore")
 }
 
-// TestCoordinator_InterruptAndSend_UnknownProvider_Errors verifies that we
-// don't queue / cancel when the model setup fails: that would leave a stuck
-// queued message that nothing will ever start.
+// TestCoordinator_InterruptAndSend_RoutesToDelegatedChildAgent verifies that
+// a delegated child's replacement is delivered to its registered driver.
+func TestCoordinator_InterruptAndSend_RoutesToDelegatedChildAgent(t *testing.T) {
+	const providerID = "interrupt-child-probe"
+	env := testEnv(t)
+	coord := newTestCoordinator(t, env, providerID, config.ProviderConfig{
+		ID:     providerID,
+		Type:   "anthropic",
+		Models: []catwalk.Model{{ID: "probe", Name: "Probe", DefaultMaxTokens: 4096}},
+	})
+	parent, err := env.sessions.Create(t.Context(), "interrupt parent")
+	require.NoError(t, err)
+	child, err := env.sessions.CreateTaskSession(t.Context(), "interrupt-child-call", parent.ID, "interrupt child")
+	require.NoError(t, err)
+
+	rootAgent := newMockAgent(providerID, 4096, nil)
+	driverAgent := newMockAgent(providerID, 4096, nil)
+	coord.currentAgent = rootAgent
+	coord.subAgentDrivers = newSubAgentDriverRegistry()
+	coord.subAgentDrivers.register(child.ID, subAgentDriver{agent: driverAgent, parentSessionID: parent.ID})
+
+	require.NoError(t, coord.InterruptAndSend(t.Context(), child.ID, "replace child work", nil, nil))
+
+	require.Empty(t, rootAgent.interruptAndReplaced, "root agent must not receive the delegated child's interrupt")
+	require.Len(t, driverAgent.interruptAndReplaced, 1)
+	require.Equal(t, child.ID, driverAgent.interruptAndReplaced[0].SessionID)
+	require.Equal(t, "replace child work", driverAgent.interruptAndReplaced[0].Prompt)
+}
+
 func TestCoordinator_InterruptAndSend_UnknownProvider_Errors(t *testing.T) {
+	// don't queue / cancel when model setup fails: that would leave a stuck
+	// queued message that nothing will ever start.
 	env := testEnv(t)
 	// Note: not registering the provider config below makes buildCall fail.
 	cfg, err := config.Init(env.workingDir, "", false)
