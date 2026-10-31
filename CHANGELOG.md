@@ -18,6 +18,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - `Connect` with `WithMayMigrate(false)` now refuses a missing store-v1 database before opening it, returning the typed migration-not-allowed error without creating the destination or attempting legacy import.
 - `go run deploy.go` now resolves the Unix npm launcher to its sibling platform-package binary before deploying, so installs outside the assumed global npm layout update correctly.
 - `rush sessions gc` now keeps sessions with a held OS session lock or live `rush run` driver, including loops between turns; `rush sessions reset` refuses held locks and live run owners unless `--force` kills the lock holder.
+- Web UI: attachment admission estimates the complete submission frame (UTF-8 prompt bytes, base64-expanded files, and 64 KiB framing reserve) against a 19 MiB budget below the server's 20 MiB `maxMessageSize`; individual files are checked at attach time, and oversized send/interrupt/inject drafts retain their text, files, and queued messages.
 - `RunWithCredentials`: the automatic follow-up turn after a delegated worker finishes no longer goes to the Client's configured (operator) provider; it is skipped and the completion is delivered with the session's next call.
 - Linked-worktree Git protection now blocks newline-separated write commands, additional ref writers, and destructive branch and tag flags.
 

@@ -8,6 +8,7 @@ import {
   $skills,
   $lastUsedSkill,
   $myPrompts,
+  $messageQueue,
   enqueueMessage,
   dequeueAllMessages,
   sendWithFastModel,
@@ -20,6 +21,7 @@ import { handleSitterCommand } from "../sitter";
 import { ListOrdered, Send, SendHorizonal, Paperclip, X, Zap, History, CornerLeftUp, PlusCircle, WifiOff } from "lucide-react";
 import type { SkillInfo } from "../types";
 import type { MyPromptItem } from "../store";
+import { isAttachmentPayloadWithinLimit } from "../attachmentLimit";
 
 interface PendingAttachment {
   fileName: string;
@@ -210,6 +212,7 @@ function HistoryMenu({ items, selectedIdx, onRecall, onJump }: HistoryMenuProps)
 export function ChatInput() {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState("");
   const activeSessionID = useStore($activeSessionID);
   const busySessions = useStore($busySessions);
   const connected = useStore($connected);
@@ -227,6 +230,7 @@ export function ChatInput() {
   const skills = useStore($skills);
   const lastUsedSkill = useStore($lastUsedSkill);
   const myPrompts = useStore($myPrompts);
+  const messageQueue = useStore($messageQueue);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -300,6 +304,11 @@ export function ChatInput() {
     if (sendNow) {
       if (!activeSessionID) return;
       const content = skill.instructions || `/${skill.name}`;
+      if (!isAttachmentPayloadWithinLimit(content, attachments)) {
+        setAttachmentError("Message exceeds the 19 MiB payload budget. Shorten the text or remove attachments before sending.");
+        return;
+      }
+      setAttachmentError("");
       // A file picked before the skill was chosen rides on the same frame
       // (same wire shape as send(): the backend appends "[Attached file:
       // <path>]" to the prompt itself) — without this the badge would stay
@@ -341,6 +350,11 @@ export function ChatInput() {
   const send = useCallback(() => {
     const msg = text.trim();
     if (!activeSessionID) return;
+    if (!isAttachmentPayloadWithinLimit(msg, attachments)) {
+      setAttachmentError("Message exceeds the 19 MiB payload budget. Shorten the text or remove attachments before sending.");
+      return;
+    }
+    setAttachmentError("");
     // Attachment-only sends are legal: the backend's send_message accepts
     // Attachments independent of Content (handlers_agent.go appends
     // "[Attached file: <path>]" to the prompt itself), so a pending
@@ -363,6 +377,16 @@ export function ChatInput() {
       return;
     }
     if (agentBusy) {
+      const queuedMessages = messageQueue.get(activeSessionID) ?? [];
+      const aggregateContent = [...queuedMessages.map((message) => message.content), msg].join("\n\n");
+      const aggregateAttachments = [
+        ...queuedMessages.flatMap((message) => message.attachments ?? []),
+        ...toWireAttachments(attachments),
+      ];
+      if (!isAttachmentPayloadWithinLimit(aggregateContent, aggregateAttachments)) {
+        setAttachmentError("Queued messages exceed the 19 MiB payload budget. Shorten the text or remove attachments before sending.");
+        return;
+      }
       // The attachment is captured by the queued message — it will go out
       // with the flushed send, so clearing the badge here is honest.
       enqueueMessage(activeSessionID, msg, toWireAttachments(attachments));
@@ -383,12 +407,17 @@ export function ChatInput() {
     setStash("");
     setHistoryOpen(false);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [text, activeSessionID, agentBusy, attachments]);
+  }, [text, activeSessionID, agentBusy, attachments, messageQueue]);
 
   const sendFast = useCallback(() => {
     const msg = text.trim();
     // Attachment-only fast-sends are legal for the same reason as send().
     if (!activeSessionID || agentBusy) return;
+    if (!isAttachmentPayloadWithinLimit(msg, attachments)) {
+      setAttachmentError("Message exceeds the 19 MiB payload budget. Shorten the text or remove attachments before sending.");
+      return;
+    }
+    setAttachmentError("");
     if (!msg && attachments.length === 0) return;
     // sendWithFastModel fire-and-forgets its frame internally (store.ts), so
     // guard here: with the socket down, keep the draft rather than let it
@@ -414,7 +443,11 @@ export function ChatInput() {
   // finishes.
   const interrupt = useCallback(() => {
     if (!activeSessionID) return;
-    const queued = dequeueAllMessages(activeSessionID);
+    const queuedMessages = messageQueue.get(activeSessionID) ?? [];
+    const queued = queuedMessages.length > 0 ? {
+      content: queuedMessages.map((message) => message.content).join("\n\n"),
+      attachments: queuedMessages.flatMap((message) => message.attachments ?? []),
+    } : undefined;
     const parts: string[] = [];
     const atts: WireAttachment[] = [];
     if (queued) {
@@ -425,6 +458,11 @@ export function ChatInput() {
     if (msg) parts.push(msg);
     atts.push(...toWireAttachments(attachments));
     const content = parts.join("\n\n");
+    if (!isAttachmentPayloadWithinLimit(content, atts)) {
+      setAttachmentError("Message exceeds the 19 MiB payload budget. Shorten the text or remove attachments before sending.");
+      return;
+    }
+    setAttachmentError("");
     // Attachment-only is valid (see send()) — the backend appends the saved
     // attachment paths to the prompt itself. Without this, relaxing canSend
     // would leave the Interrupt button enabled but dead.
@@ -445,13 +483,14 @@ export function ChatInput() {
     // as the user asked. Both delivery worlds are safe, so the frame
     // keeps its original type.
     if (!ws.sendQueued("interrupt_and_send", payload)) return;
+    if (queued) dequeueAllMessages(activeSessionID);
     setText("");
     setAttachments([]);
     setHistIdx(-1);
     setStash("");
     setHistoryOpen(false);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [text, activeSessionID, attachments]);
+  }, [text, activeSessionID, attachments, messageQueue]);
 
   // Inject the new message into the running turn WITHOUT cancelling it.
   // Backend persists the user message to the DB immediately (UI updates via
@@ -462,7 +501,11 @@ export function ChatInput() {
   // we don't race.
   const inject = useCallback(() => {
     if (!activeSessionID) return;
-    const queued = dequeueAllMessages(activeSessionID);
+    const queuedMessages = messageQueue.get(activeSessionID) ?? [];
+    const queued = queuedMessages.length > 0 ? {
+      content: queuedMessages.map((message) => message.content).join("\n\n"),
+      attachments: queuedMessages.flatMap((message) => message.attachments ?? []),
+    } : undefined;
     const parts: string[] = [];
     const atts: WireAttachment[] = [];
     if (queued) {
@@ -473,6 +516,11 @@ export function ChatInput() {
     if (msg) parts.push(msg);
     atts.push(...toWireAttachments(attachments));
     const content = parts.join("\n\n");
+    if (!isAttachmentPayloadWithinLimit(content, atts)) {
+      setAttachmentError("Message exceeds the 19 MiB payload budget. Shorten the text or remove attachments before sending.");
+      return;
+    }
+    setAttachmentError("");
     // Attachment-only is valid (see send()) — same reasoning as interrupt.
     if (!content && atts.length === 0) return;
     const payload: Record<string, unknown> = { sessionID: activeSessionID, content };
@@ -497,13 +545,14 @@ export function ChatInput() {
     // online case still needs the real inject_message type.
     const type = ws.isOpen() ? "inject_message" : "send_message";
     if (!ws.sendQueued(type, payload)) return;
+    if (queued) dequeueAllMessages(activeSessionID);
     setText("");
     setAttachments([]);
     setHistIdx(-1);
     setStash("");
     setHistoryOpen(false);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [text, activeSessionID, attachments]);
+  }, [text, activeSessionID, attachments, messageQueue]);
 
   // Apply the prompt at index `idx` to the textarea. idx=-1 restores the
   // user's draft from `stash`. Resizes the textarea and parks the caret
@@ -667,16 +716,27 @@ export function ChatInput() {
     el.style.height = Math.min(el.scrollHeight, 720) + "px";
   }
 
-  async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
+  async function appendAttachments(files: File[]) {
     if (files.length === 0) return;
+    const sizes = files.map((file) => ({ size: file.size }));
+    if (sizes.some((file) => !isAttachmentPayloadWithinLimit("", [file]))) {
+      setAttachmentError("A file exceeds the 19 MiB payload limit. Choose a smaller file.");
+      return;
+    }
+    setAttachmentError("");
     const reads = await Promise.all(files.map(readFileAsBase64));
     setAttachments((prev) => [...prev, ...reads]);
+  }
+
+  async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    await appendAttachments(files);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   function removeAttachment(idx: number) {
     setAttachments((prev) => prev.filter((_, i) => i !== idx));
+    setAttachmentError("");
   }
 
   function onDragOver(e: React.DragEvent) {
@@ -687,8 +747,7 @@ export function ChatInput() {
     e.preventDefault();
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
-    const reads = await Promise.all(files.map(readFileAsBase64));
-    setAttachments((prev) => [...prev, ...reads]);
+    await appendAttachments(files);
   }
 
   async function onPaste(e: React.ClipboardEvent) {
@@ -702,8 +761,7 @@ export function ChatInput() {
     }
     if (pastedFiles.length === 0) return;
     e.preventDefault();
-    const reads = await Promise.all(pastedFiles.map(readFileAsBase64));
-    setAttachments((prev) => [...prev, ...reads]);
+    await appendAttachments(pastedFiles);
   }
 
   // A send needs text OR a pending attachment — the backend accepts
@@ -747,6 +805,9 @@ export function ChatInput() {
             {outboxCount > 0 ? ` (${outboxCount} queued)` : ""} and go out when the connection returns.
           </span>
         </div>
+      )}
+      {attachmentError && (
+        <div role="alert" className="mb-2 text-xs text-red-400">{attachmentError}</div>
       )}
       {/* Attachment badges */}
       {attachments.length > 0 && (
