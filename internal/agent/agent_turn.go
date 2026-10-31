@@ -911,13 +911,10 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		}
 	}
 
-	// Silent compact of all non-pinned history (P0-4/#268): runs synchronously under
-	// the turn's mailbox ownership — not as a background goroutine — so no
-	// concurrent turn or compaction can delete/rewrite history while it is in
-	// flight. Skipped when shouldSummarize already ran a full compaction
-	// above (the two would be redundant, and running both would race for
-	// SummaryMessageID). genCtx is still alive here (cancel() hasn't fired
-	// yet), so Cancel(sessionID) can interrupt this if needed.
+	// Silent sliding-window compaction runs synchronously under the turn's
+	// mailbox ownership, so no concurrent turn can rewrite history while it
+	// is in flight. It preserves the recent tail verbatim and summarizes older
+	// context; skip it when a full compaction already ran above.
 	if !ts.shouldSummarize && ts.silentCompactNeeded {
 		if silentErr := a.runSummarizeSilent(genCtx, call.SessionID, call.ProviderOptions, smartModel, promptPrefix); silentErr != nil {
 			slog.Warn("silent summarise failed", "session_id", call.SessionID, "err", silentErr)

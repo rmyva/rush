@@ -564,16 +564,17 @@ func (a *sessionAgent) runSummarizeBody(ctx context.Context, sessionID string, o
 	return nil
 }
 
-// runSummarizeSilent compacts all non-pinned session messages
+// runSummarizeSilent compacts the older portion of the session history
 // synchronously under the caller's mailbox ownership without any visible
-// change in the UI. It:
-//  1. Loads all current messages and selects every non-pinned message.
-//  2. Sends those messages to the LLM for summarisation.
-//  3. Creates a hidden summary message (not rendered in the UI).
-//  4. Deletes all non-pinned messages that were summarised.
-//  5. Updates session.SummaryMessageID so future runs start from the summary.
+// change in the UI. It retains the recent tail verbatim, summarizes eligible
+// older messages, creates a hidden summary, and deletes only the messages it
+// summarized. Pinned messages are never deleted.
 //
-// Pinned messages are never deleted.
+// DESIGN (intentional, not a bug): The sliding window preserves recent
+// messages verbatim for continuity while replacing older context with a
+// summary. Summarizing everything defeats that purpose. A prior review
+// mistook the summary sorting after the retained tail (which hid it from the
+// reader) for a design flaw; the summary belongs before the verbatim tail.
 func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, smartModel Model, systemPromptPrefix string) error {
 	// Heartbeat attribution: same summary purpose, silent path (design pt. 1).
 	role, source := hbInherited(ctx)
@@ -591,10 +592,18 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 		return nil
 	}
 
-	// Summarize all non-pinned history. Pinned messages remain in history and
-	// are never deleted.
+	// sliding window: keep the recent tail verbatim. Start at the first
+	// eligible non-tool message in the latter half so a tool exchange is not
+	// split; if none exists, summarize the entire history.
+	boundary := len(msgs)
+	for i := len(msgs) / 2; i < len(msgs); i++ {
+		if msgs[i].Role != message.Tool {
+			boundary = i
+			break
+		}
+	}
 	var toSummarise []message.Message
-	for _, m := range msgs {
+	for _, m := range msgs[:boundary] {
 		if !m.Pinned {
 			toSummarise = append(toSummarise, m)
 		}
@@ -762,6 +771,33 @@ func (a *sessionAgent) runSummarizeSilent(ctx context.Context, sessionID string,
 	// rationale as the manual /compact path above.
 	a.recordMessageUsage(commitCtx, summaryMessage.ID, smartModel, totalUsage, costDelta, false)
 
+	if boundary < len(msgs) {
+		// Place summary immediately before the first kept message before
+		// updating the pointer, or timestamp-based reads may omit it.
+		// A pinned older row at keptAt sorts after the summary in the same second,
+		// so it stays in the tail in chronological order; manual compaction differs.
+		keptAt := msgs[boundary].CreatedAt
+		timestampService, ok := a.messages.(interface {
+			SetSummaryCreatedAt(context.Context, string, string, int64) (bool, error)
+		})
+		if !ok {
+			cleanupErr := a.messages.Delete(commitCtx, summaryMessage.ID)
+			return errors.Join(errors.New("message service does not support summary timestamps"), cleanupErr)
+		}
+		if applied, stampErr := timestampService.SetSummaryCreatedAt(commitCtx, sessionID, summaryMessage.ID, keptAt-1); stampErr != nil || !applied {
+			cleanupErr := a.messages.Delete(commitCtx, summaryMessage.ID)
+			if stampErr != nil {
+				if cleanupErr != nil {
+					return errors.Join(fmt.Errorf("set sliding summary timestamp: %w", stampErr), fmt.Errorf("delete orphaned summary: %w", cleanupErr))
+				}
+				return fmt.Errorf("set sliding summary timestamp: %w", stampErr)
+			}
+			if cleanupErr != nil {
+				return errors.Join(errors.New("set sliding summary timestamp: no matching summary row updated"), fmt.Errorf("delete orphaned summary: %w", cleanupErr))
+			}
+			return errors.New("set sliding summary timestamp: no matching summary row updated")
+		}
+	}
 	if err := a.sessions.SetSummaryAndUsage(commitCtx, freshSession.ID, summaryMessage.ID, 0, resp.Response.Usage.OutputTokens); err != nil {
 		// Nothing has been deleted yet, so the session is still whole: the
 		// compaction simply did not happen, and the next turn retries it.

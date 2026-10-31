@@ -222,6 +222,29 @@ func TestListMessages_WithReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestSetSummaryCreatedAt(t *testing.T) {
+	_, q := newTestMessageDB(t)
+	svc := NewService(q)
+	ctx := t.Context()
+	created, err := svc.Create(ctx, "summary-timestamp", CreateMessageParams{Role: Assistant, IsSummaryMessage: true, Parts: []ContentPart{TextContent{Text: "summary"}}})
+	require.NoError(t, err)
+
+	updated, err := svc.(interface {
+		SetSummaryCreatedAt(context.Context, string, string, int64) (bool, error)
+	}).SetSummaryCreatedAt(ctx, "summary-timestamp", created.ID, 1)
+	require.NoError(t, err)
+	require.True(t, updated)
+	got, err := svc.Get(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), got.CreatedAt)
+
+	updated, err = svc.(interface {
+		SetSummaryCreatedAt(context.Context, string, string, int64) (bool, error)
+	}).SetSummaryCreatedAt(ctx, "wrong-session", created.ID, 2)
+	require.NoError(t, err)
+	require.False(t, updated)
+}
+
 func TestCreateMessage_ParamsValidation(t *testing.T) {
 	_, q := newTestMessageDB(t)
 	svc := NewService(q)

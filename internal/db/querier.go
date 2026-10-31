@@ -726,6 +726,7 @@ type Querier interface {
 	// Stop transitivity (DUR-9, doc sec.3.8), notices half of
 	// SetAsyncJobsWakeZeroPendingForOwners.
 	SetSessionNoticesWakeZeroPendingForOwners(ctx context.Context, arg SetSessionNoticesWakeZeroPendingForOwnersParams) (int64, error)
+	SetSummaryMessageCreatedAt(ctx context.Context, arg SetSummaryMessageCreatedAtParams) (int64, error)
 	// Notices half of SettleAsyncJobReactedFailedForSnapshotRow (doc sec.3.4,
 	// R2A-5): closes debt on ONE snapshot row after K=3 failed passes, under the
 	// same still-the-row-the-snapshot-saw guard. reacted_failed distinguishes this

@@ -531,6 +531,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.setSessionNoticesWakeZeroPendingForOwnersStmt, err = db.PrepareContext(ctx, setSessionNoticesWakeZeroPendingForOwners); err != nil {
 		return nil, fmt.Errorf("error preparing query SetSessionNoticesWakeZeroPendingForOwners: %w", err)
 	}
+	if q.setSummaryMessageCreatedAtStmt, err = db.PrepareContext(ctx, setSummaryMessageCreatedAt); err != nil {
+		return nil, fmt.Errorf("error preparing query SetSummaryMessageCreatedAt: %w", err)
+	}
 	if q.settleSessionNoticeReactedFailedForSnapshotRowStmt, err = db.PrepareContext(ctx, settleSessionNoticeReactedFailedForSnapshotRow); err != nil {
 		return nil, fmt.Errorf("error preparing query SettleSessionNoticeReactedFailedForSnapshotRow: %w", err)
 	}
@@ -1459,6 +1462,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing setSessionNoticesWakeZeroPendingForOwnersStmt: %w", cerr)
 		}
 	}
+	if q.setSummaryMessageCreatedAtStmt != nil {
+		if cerr := q.setSummaryMessageCreatedAtStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing setSummaryMessageCreatedAtStmt: %w", cerr)
+		}
+	}
 	if q.settleSessionNoticeReactedFailedForSnapshotRowStmt != nil {
 		if cerr := q.settleSessionNoticeReactedFailedForSnapshotRowStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing settleSessionNoticeReactedFailedForSnapshotRowStmt: %w", cerr)
@@ -1797,6 +1805,7 @@ type Queries struct {
 	setParentCostAccountedStmt                           *sql.Stmt
 	setSessionNoticeMessageIDStmt                        *sql.Stmt
 	setSessionNoticesWakeZeroPendingForOwnersStmt        *sql.Stmt
+	setSummaryMessageCreatedAtStmt                       *sql.Stmt
 	settleSessionNoticeReactedFailedForSnapshotRowStmt   *sql.Stmt
 	stampInterruptedAssistantIfStillLastStmt             *sql.Stmt
 	sumMessageUsageByDayInRangeStmt                      *sql.Stmt
@@ -1998,6 +2007,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		setParentCostAccountedStmt:                           q.setParentCostAccountedStmt,
 		setSessionNoticeMessageIDStmt:                        q.setSessionNoticeMessageIDStmt,
 		setSessionNoticesWakeZeroPendingForOwnersStmt:        q.setSessionNoticesWakeZeroPendingForOwnersStmt,
+		setSummaryMessageCreatedAtStmt:                       q.setSummaryMessageCreatedAtStmt,
 		settleSessionNoticeReactedFailedForSnapshotRowStmt:   q.settleSessionNoticeReactedFailedForSnapshotRowStmt,
 		stampInterruptedAssistantIfStillLastStmt:             q.stampInterruptedAssistantIfStillLastStmt,
 		sumMessageUsageByDayInRangeStmt:                      q.sumMessageUsageByDayInRangeStmt,

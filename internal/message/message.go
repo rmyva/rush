@@ -299,6 +299,11 @@ func (s *service) currentDeleteGeneration(sessionID string) int64 {
 	return s.deleteGen[sessionID]
 }
 
+func (s *service) SetSummaryCreatedAt(ctx context.Context, sessionID, messageID string, createdAt int64) (bool, error) {
+	n, err := s.q.SetSummaryMessageCreatedAt(ctx, db.SetSummaryMessageCreatedAtParams{CreatedAt: createdAt, ID: messageID, SessionID: sessionID})
+	return n == 1, err
+}
+
 func (s *service) Delete(ctx context.Context, id string) error {
 	message, err := s.Get(ctx, id)
 	if err != nil {

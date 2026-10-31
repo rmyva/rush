@@ -342,6 +342,8 @@ func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.S
 			}
 		}
 		if summaryMsgIndex != -1 {
+			// Summary MUST sort before the verbatim tail: the reader returns
+			// msgs[summaryIndex:] and treats that summary as the context prefix.
 			// Collect pinned messages that appear before the summary
 			var pinned []message.Message
 			for _, msg := range msgs[:summaryMsgIndex] {

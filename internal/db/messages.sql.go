@@ -957,6 +957,26 @@ func (q *Queries) ListUserMessagesBySession(ctx context.Context, sessionID strin
 	return items, nil
 }
 
+const setSummaryMessageCreatedAt = `-- name: SetSummaryMessageCreatedAt :execrows
+UPDATE messages
+SET created_at = ?
+WHERE id = ? AND session_id = ? AND is_summary_message = 1
+`
+
+type SetSummaryMessageCreatedAtParams struct {
+	CreatedAt int64  `json:"created_at"`
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
+}
+
+func (q *Queries) SetSummaryMessageCreatedAt(ctx context.Context, arg SetSummaryMessageCreatedAtParams) (int64, error) {
+	result, err := q.exec(ctx, q.setSummaryMessageCreatedAtStmt, setSummaryMessageCreatedAt, arg.CreatedAt, arg.ID, arg.SessionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const stampInterruptedAssistantIfStillLast = `-- name: StampInterruptedAssistantIfStillLast :execrows
 UPDATE messages
 SET

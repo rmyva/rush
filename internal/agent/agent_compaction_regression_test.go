@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"database/sql"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -25,7 +28,7 @@ func compactionRetryServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
 			require.NoError(t, err)
 			_, err = fmt.Fprintf(conn, "%x\r\n%s\r\n", len(payload), payload)
 			require.NoError(t, err)
-			require.NoError(t, conn.Close()) // incomplete chunked body produces io.ErrUnexpectedEOF.
+			require.NoError(t, conn.Close())
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -37,7 +40,7 @@ func compactionRetryServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
 	return srv, &calls
 }
 
-func compactionFixture(t *testing.T, srv *httptest.Server) (*sessionAgent, string, Model) {
+func compactionFixture(t *testing.T, srv *httptest.Server) (*sessionAgent, string, Model, *sql.DB) {
 	t.Helper()
 	env := testEnv(t)
 	lm := languageModelFromServer(t, srv)
@@ -45,54 +48,154 @@ func compactionFixture(t *testing.T, srv *httptest.Server) (*sessionAgent, strin
 	a := NewSessionAgent(SessionAgentOptions{SmartModel: model, FastModel: model, SystemPrompt: "probe", IsYolo: true, Sessions: env.sessions, Messages: env.messages, Tools: []fantasy.AgentTool{}, DisableAutoSummarize: true}).(*sessionAgent)
 	sess, err := env.sessions.Create(t.Context(), "compaction regression")
 	require.NoError(t, err)
-	return a, sess.ID, a.smartModel.Get()
+	return a, sess.ID, a.smartModel.Get(), env.conn
 }
 
-func TestSilentCompactionSummarizesAndDeletesAllNonPinnedHistory(t *testing.T) {
+func TestSilentCompactionKeepsRecentTailVerbatim(t *testing.T) {
+	// Keep recent exchanges verbatim; older history should be summarized.
 	srv := summarizeSSEServer(10, 2, nil)
 	t.Cleanup(srv.Close)
-	a, sid, model := compactionFixture(t, srv)
+	a, sid, model, _ := compactionFixture(t, srv)
 	var seeded []message.Message
-	for i := 0; i < 9; i++ {
-		m, err := a.messages.Create(t.Context(), sid, message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: fmt.Sprintf("history-%d", i)}}})
+	for i := 0; i < 16; i++ {
+		role := message.User
+		if i%2 == 1 {
+			role = message.Assistant
+		}
+		m, err := a.messages.Create(t.Context(), sid, message.CreateMessageParams{Role: role, Parts: []message.ContentPart{message.TextContent{Text: fmt.Sprintf("history-%d", i)}}})
 		require.NoError(t, err)
+		if role == message.Assistant {
+			m.AddFinish(message.FinishReasonEndTurn, "", "")
+			require.NoError(t, a.messages.Update(t.Context(), m.Clone()))
+		}
 		seeded = append(seeded, m)
 	}
-	require.NoError(t, a.messages.SetPinned(t.Context(), seeded[2].ID, true))
 	require.NoError(t, a.runSummarizeSilent(t.Context(), sid, fantasy.ProviderOptions{}, model, ""))
-
 	sess, err := a.sessions.Get(t.Context(), sid)
 	require.NoError(t, err)
 	require.NotEmpty(t, sess.SummaryMessageID)
-	before, err := a.messages.List(t.Context(), sid)
-	require.NoError(t, err)
-	require.Len(t, before, 2)
-	require.Equal(t, []string{seeded[2].ID, sess.SummaryMessageID}, []string{before[0].ID, before[1].ID})
-	require.True(t, before[1].IsSummaryMessage)
 	modelHistory, err := a.getSessionMessages(t.Context(), sess)
 	require.NoError(t, err)
-	require.Equal(t, []string{seeded[2].ID, sess.SummaryMessageID}, []string{modelHistory[0].ID, modelHistory[1].ID})
-	require.Equal(t, message.User, modelHistory[1].Role)
+	wantIDs := append([]string{sess.SummaryMessageID}, messageIDs(seeded[8:])...)
+	require.Equal(t, wantIDs, messageIDs(modelHistory))
+	require.Equal(t, message.User, modelHistory[0].Role)
+	for i, got := range modelHistory[1:] {
+		require.Equal(t, seeded[i+8].Role, got.Role)
+		require.Equal(t, fmt.Sprintf("history-%d", i+8), got.Content().Text)
+	}
 	for i, m := range seeded {
 		_, err = a.messages.Get(t.Context(), m.ID)
-		if i == 2 {
+		if i >= 8 {
 			require.NoError(t, err)
 		} else {
 			require.Error(t, err)
 		}
 	}
-	_, err = a.messages.Create(t.Context(), sid, message.CreateMessageParams{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "post-compaction"}}})
+}
+
+func messageIDs(msgs []message.Message) []string {
+	ids := make([]string, len(msgs))
+	for i, msg := range msgs {
+		ids[i] = msg.ID
+	}
+	return ids
+}
+
+func TestSilentCompactionToolBoundaryAndPinnedOlderMessage(t *testing.T) {
+	var requestMu sync.Mutex
+	var requestBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		requestMu.Lock()
+		requestBody = string(body)
+		requestMu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"probe\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n")
+		fmt.Fprint(w, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"probe\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	a, sid, model, conn := compactionFixture(t, srv)
+	var seeded []message.Message
+	for i := 0; i < 12; i++ {
+		role := message.User
+		parts := []message.ContentPart{message.TextContent{Text: fmt.Sprintf("history-%d", i)}}
+		switch i {
+		case 1, 5:
+			role = message.Assistant
+			parts = []message.ContentPart{message.ToolCall{ID: fmt.Sprintf("call-%d", i), Name: "probe", Input: `{}`}}
+		case 6:
+			role = message.Tool
+			parts = []message.ContentPart{message.ToolResult{ToolCallID: "call-5", Name: "probe", Content: "tool-result-6"}}
+		}
+		m, err := a.messages.Create(t.Context(), sid, message.CreateMessageParams{Role: role, Parts: parts})
+		require.NoError(t, err)
+		if role == message.Assistant {
+			m.AddFinish(message.FinishReasonEndTurn, "", "")
+			require.NoError(t, a.messages.Update(t.Context(), m.Clone()))
+		}
+		seeded = append(seeded, m)
+	}
+	require.NoError(t, a.messages.SetPinned(t.Context(), seeded[1].ID, true))
+	// Set the pinned row well before the new summary and future kept messages,
+	// avoiding same-second rowid ordering from making it appear after summary.
+	ids := make([]any, 0, 6)
+	for i := 0; i < 6; i++ {
+		ids = append(ids, seeded[i].ID)
+	}
+	_, err := conn.ExecContext(t.Context(), `UPDATE messages SET created_at = created_at - 100 WHERE id IN (?, ?, ?, ?, ?, ?)`, ids...)
 	require.NoError(t, err)
-	history, err := a.messages.List(t.Context(), sid)
+	require.NoError(t, a.runSummarizeSilent(t.Context(), sid, fantasy.ProviderOptions{}, model, ""))
+	sess, err := a.sessions.Get(t.Context(), sid)
 	require.NoError(t, err)
-	require.Len(t, history, 3)
-	require.Equal(t, []string{seeded[2].ID, sess.SummaryMessageID}, []string{history[0].ID, history[1].ID})
-	require.Equal(t, "post-compaction", history[2].Content().Text)
-	require.True(t, history[1].IsSummaryMessage)
-	modelHistory, err = a.getSessionMessages(t.Context(), sess)
+	got, err := a.getSessionMessages(t.Context(), sess)
 	require.NoError(t, err)
-	require.Equal(t, []string{seeded[2].ID, sess.SummaryMessageID, history[2].ID}, []string{modelHistory[0].ID, modelHistory[1].ID, modelHistory[2].ID})
-	require.Equal(t, message.User, modelHistory[1].Role)
+	require.Equal(t, []string{seeded[1].ID, sess.SummaryMessageID, seeded[7].ID, seeded[8].ID, seeded[9].ID, seeded[10].ID, seeded[11].ID}, messageIDs(got))
+	require.Equal(t, message.User, got[1].Role)
+	for _, id := range []string{seeded[5].ID, seeded[6].ID} {
+		_, getErr := a.messages.Get(t.Context(), id)
+		require.Error(t, getErr)
+	}
+	requestMu.Lock()
+	body := requestBody
+	requestMu.Unlock()
+	require.Contains(t, body, "call-5")
+	require.Contains(t, body, "tool-result-6")
+	require.Equal(t, message.User, got[2].Role)
+	require.Equal(t, "history-7", got[2].Content().Text)
+}
+
+func TestSilentCompactionPinnedOlderMessageAtKeptTimestamp(t *testing.T) {
+	srv := summarizeSSEServer(10, 2, nil)
+	t.Cleanup(srv.Close)
+	a, sid, model, conn := compactionFixture(t, srv)
+	var seeded []message.Message
+	for i := 0; i < 8; i++ {
+		role := message.User
+		if i%2 == 1 {
+			role = message.Assistant
+		}
+		m, err := a.messages.Create(t.Context(), sid, message.CreateMessageParams{Role: role, Parts: []message.ContentPart{message.TextContent{Text: fmt.Sprintf("history-%d", i)}}})
+		require.NoError(t, err)
+		if role == message.Assistant {
+			m.AddFinish(message.FinishReasonEndTurn, "", "")
+			require.NoError(t, a.messages.Update(t.Context(), m.Clone()))
+		}
+		seeded = append(seeded, m)
+	}
+	_, err := conn.ExecContext(t.Context(), `UPDATE messages SET created_at = 100 WHERE session_id = ?`, sid)
+	require.NoError(t, err)
+	require.NoError(t, a.messages.SetPinned(t.Context(), seeded[1].ID, true))
+	require.NoError(t, a.runSummarizeSilent(t.Context(), sid, fantasy.ProviderOptions{}, model, ""))
+	sess, err := a.sessions.Get(t.Context(), sid)
+	require.NoError(t, err)
+	got, err := a.getSessionMessages(t.Context(), sess)
+	require.NoError(t, err)
+	require.Equal(t, []string{sess.SummaryMessageID, seeded[1].ID, seeded[4].ID, seeded[5].ID, seeded[6].ID, seeded[7].ID}, messageIDs(got))
 }
 
 func TestCompactionRetriesDiscardAbandonedSummaryText(t *testing.T) {
@@ -103,7 +206,7 @@ func TestCompactionRetriesDiscardAbandonedSummaryText(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			srv, calls := compactionRetryServer(t)
-			a, sid, model := compactionFixture(t, srv)
+			a, sid, model, _ := compactionFixture(t, srv)
 			for i := 0; i < 8; i++ {
 				role := message.User
 				if i%2 == 1 {

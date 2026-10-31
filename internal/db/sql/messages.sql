@@ -17,6 +17,11 @@ WHERE session_id = ?
 -- non-monotonic UUID, unsuitable as a tiebreaker).
 ORDER BY created_at ASC, rowid ASC;
 
+-- name: SetSummaryMessageCreatedAt :execrows
+UPDATE messages
+SET created_at = ?
+WHERE id = ? AND session_id = ? AND is_summary_message = 1;
+
 -- name: CreateMessage :one
 INSERT INTO messages (
     id,
