@@ -69,41 +69,37 @@ if (!fs.existsSync(binary)) {
 let launchTarget = binary;
 let privateLaunchDir;
 try {
-  const key = hashFileSync(binary);
-
   const cacheRoot = resolveCacheRoot();
   const binCacheDir = path.join(cacheRoot, 'rush', 'bin');
-  const targetDir = path.join(binCacheDir, key);
-  const targetPath = path.join(targetDir, binName);
 
-  // Pin the selected cache file before sweeping other build keys.
+  // Hash the installed binary first so an existing cache entry can be used
+  // without copying it into a staging directory. If the source changes during
+  // a cache miss copy, the staged hash remains the authoritative final key.
   fs.mkdirSync(binCacheDir, { recursive: true });
+  let key = hashFileSync(binary);
+  let targetDir = path.join(binCacheDir, key);
+  let targetPath = path.join(targetDir, binName);
   if (!fs.existsSync(targetPath)) {
-    // Unique-per-process tmp dir so two concurrent first-launches never
-    // write into the same staging path (plan §10 Г5).
     const tmpDir = path.join(
       binCacheDir,
       '.tmp-' + process.pid + '-' + process.hrtime.bigint().toString(36),
     );
-    fs.mkdirSync(tmpDir, { recursive: true });
+    fs.mkdirSync(tmpDir);
     const tmpPath = path.join(tmpDir, binName);
     fs.copyFileSync(binary, tmpPath);
     if (process.platform !== 'win32') {
       fs.chmodSync(tmpPath, 0o755);
     }
 
+    key = hashFileSync(tmpPath);
+    targetDir = path.join(binCacheDir, key);
+    targetPath = path.join(targetDir, binName);
     try {
       fs.renameSync(tmpDir, targetDir);
     } catch (renameErr) {
-      // Another process won the race and already created (and may already
-      // be executing) targetDir. That's a normal outcome, not an error —
-      // just drop our staging copy and use the winner's.
+      // A concurrent launcher may have published the same staged bytes.
       if (fs.existsSync(targetPath)) {
-        try {
-          fs.rmSync(tmpDir, { recursive: true, force: true });
-        } catch (_) {
-          // best-effort cleanup only
-        }
+        fs.rmSync(tmpDir, { recursive: true, force: true });
       } else {
         throw renameErr;
       }
@@ -119,7 +115,9 @@ try {
   try {
     fs.linkSync(targetPath, privateLaunchPath);
   } catch (_) {
-    fs.copyFileSync(binary, privateLaunchPath);
+    // Fall back to the exact bytes represented by this cache key, not the
+    // potentially replaced installed binary.
+    fs.copyFileSync(targetPath, privateLaunchPath);
   }
   if (process.platform !== 'win32') {
     fs.chmodSync(privateLaunchPath, 0o755);
@@ -132,7 +130,19 @@ try {
     for (const entry of fs.readdirSync(binCacheDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       if (entry.name === key) continue;
-      if (entry.name.startsWith('.tmp-')) continue; // mid-copy by another process
+      if (entry.name.startsWith('.tmp-launch-')) {
+        const match = /^\.tmp-launch-(\d+)-/.exec(entry.name);
+        // Unknown names and unverifiable PIDs are retained. Only ESRCH is
+        // proof that an owner is gone; EPERM and other errors mean live/unknown.
+        if (!match || isProcessAlive(Number(match[1]))) continue;
+        try {
+          fs.rmSync(path.join(binCacheDir, entry.name), { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+        } catch (_) {
+          // Housekeeping only; retry on a later launch.
+        }
+        continue;
+      }
+      if (entry.name.startsWith('.tmp-')) continue; // cache staging by another process
       try {
         fs.rmSync(path.join(binCacheDir, entry.name), { recursive: true, force: true });
       } catch (_) {
@@ -221,6 +231,16 @@ function resolveCacheRoot() {
     return path.join(os.homedir(), 'Library', 'Caches');
   }
   return process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return !err || err.code !== 'ESRCH';
+  }
 }
 
 function releasePrivateLaunchDir(privateDir) {

@@ -45,9 +45,104 @@ type Info struct {
 	URL     string
 }
 
-// Matches a version string like:
-// v0.0.0-0.20251231235959-06c807842604
-var goInstallRegexp = regexp.MustCompile(`^v?\d+\.\d+\.\d+-\d+\.\d{14}-[0-9a-f]{12}$`)
+var (
+	goInstallRegexp       = regexp.MustCompile(`^v?\d+\.\d+\.\d+-\d+\.\d{14}-[0-9a-f]{12}$`)
+	checkoutVersionRegexp = regexp.MustCompile(`^([0-9a-f]{1,7})-(.+?)(?: \(([^()\r\n]+)\))?$`)
+	semverRegexp          = regexp.MustCompile(`^[vV]?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
+)
+
+type semver struct {
+	major, minor, patch string
+	prerelease          []string
+}
+
+func parseSemver(version string) (semver, bool) {
+	parts := semverRegexp.FindStringSubmatch(version)
+	if parts == nil {
+		return semver{}, false
+	}
+	parsed := semver{major: parts[1], minor: parts[2], patch: parts[3]}
+	if parts[4] != "" {
+		parsed.prerelease = strings.Split(parts[4], ".")
+		for _, identifier := range parsed.prerelease {
+			if len(identifier) > 1 && identifier[0] == '0' && allDigits(identifier) {
+				return semver{}, false
+			}
+		}
+	}
+	return parsed, true
+}
+
+func allDigits(value string) bool {
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func compareNumeric(a, b string) int {
+	if len(a) != len(b) {
+		if len(a) < len(b) {
+			return -1
+		}
+		return 1
+	}
+	if a < b {
+		return -1
+	}
+	if a > b {
+		return 1
+	}
+	return 0
+}
+
+func compareSemver(a, b semver) int {
+	for _, pair := range [][2]string{{a.major, b.major}, {a.minor, b.minor}, {a.patch, b.patch}} {
+		if c := compareNumeric(pair[0], pair[1]); c != 0 {
+			return c
+		}
+	}
+	if len(a.prerelease) == 0 {
+		if len(b.prerelease) == 0 {
+			return 0
+		}
+		return 1
+	}
+	if len(b.prerelease) == 0 {
+		return -1
+	}
+	for n := 0; n < len(a.prerelease) && n < len(b.prerelease); n++ {
+		x, y := a.prerelease[n], b.prerelease[n]
+		xn, yn := allDigits(x), allDigits(y)
+		if xn && yn {
+			if c := compareNumeric(x, y); c != 0 {
+				return c
+			}
+			continue
+		}
+		if xn != yn {
+			if xn {
+				return -1
+			}
+			return 1
+		}
+		if x < y {
+			return -1
+		}
+		if x > y {
+			return 1
+		}
+	}
+	if len(a.prerelease) < len(b.prerelease) {
+		return -1
+	}
+	if len(a.prerelease) > len(b.prerelease) {
+		return 1
+	}
+	return 0
+}
 
 func (i Info) IsDevelopment() bool {
 	// Fork patch: recognise the fork's dev-version formats. internal/version
@@ -55,31 +150,34 @@ func (i Info) IsDevelopment() bool {
 	// local `go build`/`make build`; the go-install pseudo-version and any
 	// dirty marker are also treated as development. These prefixes must stay
 	// in lockstep with deriveDevVersion/formatFullVersion in internal/version.
+	checkoutVersion := checkoutVersionRegexp.FindStringSubmatch(i.Current)
+	validCheckoutVersion := checkoutVersion != nil
+	if validCheckoutVersion {
+		_, validCheckoutVersion = parseSemver(checkoutVersion[2])
+	}
 	return i.Current == "devel" || i.Current == "unknown" ||
 		strings.HasPrefix(i.Current, "devel ") ||
 		strings.HasPrefix(i.Current, "devel-") ||
 		strings.Contains(i.Current, "dirty") ||
-		goInstallRegexp.MatchString(i.Current)
+		goInstallRegexp.MatchString(i.Current) || validCheckoutVersion
 }
 
-// Available returns true if there's an update available.
-//
-// If both current and latest are stable versions, returns true if versions are
-// different.
-// If current is a pre-release and latest isn't, returns true.
-// If latest is a pre-release and current isn't, returns false.
+// Available returns true only when Latest is a valid semver strictly newer
+// than Current. Stable current versions never receive prerelease updates;
+// build metadata is ignored for precedence.
 func (i Info) Available() bool {
-	cpr := strings.Contains(i.Current, "-")
-	lpr := strings.Contains(i.Latest, "-")
-	// current is pre release && latest isn't a prerelease
-	if cpr && !lpr {
-		return true
-	}
-	// latest is pre release && current isn't a prerelease
-	if lpr && !cpr {
+	current, ok := parseSemver(i.Current)
+	if !ok {
 		return false
 	}
-	return i.Current != i.Latest
+	latest, ok := parseSemver(i.Latest)
+	if !ok {
+		return false
+	}
+	if len(current.prerelease) == 0 && len(latest.prerelease) > 0 {
+		return false
+	}
+	return compareSemver(latest, current) > 0
 }
 
 // Check checks if a new version is available.
@@ -111,7 +209,9 @@ type Client interface {
 	Latest(ctx context.Context) (*Release, error)
 }
 
-type github struct{}
+type github struct {
+	url string
+}
 
 // Latest implements [Client].
 func (c *github) Latest(ctx context.Context) (*Release, error) {
@@ -119,7 +219,11 @@ func (c *github) Latest(ctx context.Context) (*Release, error) {
 		Timeout: 30 * time.Second,
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", githubApiUrl, nil)
+	url := c.url
+	if url == "" {
+		url = githubApiUrl
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -140,6 +244,12 @@ func (c *github) Latest(ctx context.Context) (*Release, error) {
 	var release Release
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxReleaseBodyBytes)).Decode(&release); err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(release.TagName) == "" {
+		return nil, fmt.Errorf("GitHub API response has an empty release tag")
+	}
+	if _, ok := parseSemver(release.TagName); !ok {
+		return nil, fmt.Errorf("GitHub API response has an invalid release tag %q", release.TagName)
 	}
 
 	return &release, nil

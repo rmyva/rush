@@ -107,18 +107,30 @@ function runLauncherInVm(fixture, hooks) {
       const childProcess = realRequire(request);
       return Object.assign({}, childProcess, {
         spawnSync(...args) {
-          if (hooks.beforeSpawn) hooks.beforeSpawn();
+          if (hooks.beforeSpawn) hooks.beforeSpawn(args[0]);
+          if (hooks.captureExecution) hooks.captureExecution(args[0]);
           return childProcess.spawnSync(...args);
         },
       });
     }
-    if (request === 'node:fs' && (hooks.beforePin || hooks.failLink)) {
+    if (request === 'node:fs' && (hooks.beforePin || hooks.failLink || hooks.onLink || hooks.beforeSourceCopy)) {
       const fsModule = realRequire(request);
       return new Proxy(fsModule, {
         get(target, property, receiver) {
+          if (property === 'copyFileSync') {
+            return (...args) => {
+              if (args[0] === fixture.binPath && hooks.beforeSourceCopy) {
+                const hook = hooks.beforeSourceCopy;
+                hooks.beforeSourceCopy = null;
+                hook(args[0], args[1]);
+              }
+              return target.copyFileSync(...args);
+            };
+          }
           if (property !== 'linkSync') return Reflect.get(target, property, receiver);
           return (...args) => {
             if (hooks.beforePin) hooks.beforePin();
+            if (hooks.onLink) hooks.onLink(args[1]);
             if (hooks.failLink) {
               const err = new Error('hardlinks unavailable in test');
               err.code = 'EOPNOTSUPP';
@@ -141,6 +153,16 @@ function runLauncherInVm(fixture, hooks) {
     RUSH_BIN_CACHE: fixture.cacheDir,
   });
   launchProcess.argv = [process.execPath, RUSH_JS, '--version'];
+  if (hooks.deadPid != null) {
+    launchProcess.kill = (pid, signal) => {
+      if (pid === hooks.deadPid && signal === 0) {
+        const err = new Error('process does not exist');
+        err.code = 'ESRCH';
+        throw err;
+      }
+      return process.kill(pid, signal);
+    };
+  }
   launchProcess.exit = (code) => { throw new LauncherExit(code); };
 
   try {
@@ -496,11 +518,116 @@ function testConcurrentDifferentBuildLaunches() {
   }
 }
 
+function testAbandonedLaunchDirectorySweep() {
+  const fx = makeFixture('rush-launch-sweep', { realBinary: true });
+  try {
+    const binCacheDir = path.join(fx.cacheDir, 'rush', 'bin');
+    fs.mkdirSync(binCacheDir, { recursive: true });
+    const deadDir = path.join(binCacheDir, '.tmp-launch-2147483647-dead');
+    const liveDir = path.join(binCacheDir, '.tmp-launch-' + process.pid + '-live');
+    fs.mkdirSync(deadDir);
+    fs.writeFileSync(path.join(deadDir, BIN_NAME), 'abandoned');
+    fs.mkdirSync(liveDir);
+    fs.writeFileSync(path.join(liveDir, BIN_NAME), 'in-use');
+    const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(liveDir, staleTime, staleTime);
+
+    let launchPath;
+    const deadPid = 2147483647;
+    const exitCode = runLauncherInVm(fx, {
+      deadPid,
+      onLink: (target) => { launchPath = target; },
+      beforeSpawn: () => {
+        assert.ok(!fs.existsSync(deadDir), 'abandoned launch directory was not swept');
+        assert.ok(fs.existsSync(liveDir), 'directory owned by a live process was swept');
+        assert.ok(Date.now() - fs.statSync(liveDir).mtimeMs > 24 * 60 * 60 * 1000, 'live stale directory timestamp was unexpectedly refreshed');
+      },
+    });
+    assert.strictEqual(exitCode, 0, 'launcher failed during stale launch sweep');
+    const key = listCacheDirs(binCacheDir).find((name) => /^[a-f0-9]{64}$/.test(name));
+    assert.ok(key, 'hash-named cache entry missing');
+    assert.strictEqual(path.basename(path.join(binCacheDir, key, BIN_NAME)), BIN_NAME);
+    assert.ok(!launchPath || path.basename(launchPath) === BIN_NAME, 'executable basename changed');
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+  }
+}
+
+function testWarmCacheLaunchDoesNotCopy() {
+  const fx = makeFixture('rush-warm-cache', { realBinary: true });
+  try {
+    let firstCopy = false;
+    const firstExit = runLauncherInVm(fx, {
+      beforeSourceCopy: () => { firstCopy = true; },
+    });
+    assert.strictEqual(firstExit, 0, 'first launch failed');
+    assert.strictEqual(firstCopy, true, 'first cold-cache launch did not copy the installed binary');
+
+    let secondCopy = false;
+    const secondExit = runLauncherInVm(fx, {
+      beforeSourceCopy: () => { secondCopy = true; },
+    });
+    assert.strictEqual(secondExit, 0, 'second launch failed');
+    assert.strictEqual(secondCopy, false, 'warm-cache launch copied the installed binary');
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+  }
+}
+
+function testCopyReplacementUsesPublishedHash() {
+  const fx = makeFixture('rush-copy-replacement', { realBinary: true });
+  try {
+    let replacementApplied = false;
+    const executedBytes = [];
+    const originalCopy = fs.readFileSync(fx.binPath);
+    const replacement = process.platform === 'win32'
+      ? Buffer.concat([fs.readFileSync(process.execPath), Buffer.from('replacement-build')])
+      : Buffer.from('#!/usr/bin/env node\nprocess.stdout.write("replacement-build\\n");\n');
+
+    const launch = () => runLauncherInVm(fx, {
+      captureExecution: (launchTarget) => {
+        executedBytes.push(fs.readFileSync(launchTarget));
+      },
+      beforeSourceCopy: () => {
+        if (replacementApplied) return;
+        replacementApplied = true;
+        fs.writeFileSync(fx.binPath, replacement);
+        if (process.platform !== 'win32') fs.chmodSync(fx.binPath, 0o755);
+      },
+      beforeSpawn: () => {
+        const binCacheDir = path.join(fx.cacheDir, 'rush', 'bin');
+        const key = listCacheDirs(binCacheDir).find((name) => /^[a-f0-9]{64}$/.test(name));
+        assert.ok(key, 'hash-named cache entry missing');
+        const published = fs.readFileSync(path.join(binCacheDir, key, BIN_NAME));
+        assert.strictEqual(
+          key,
+          require('node:crypto').createHash('sha256').update(published).digest('hex'),
+          'cache key does not match the bytes actually published',
+        );
+      },
+    });
+
+    assert.strictEqual(launch(), 0, 'first launch failed after source replacement');
+    assert.strictEqual(launch(), 0, 'repeat launch failed for the genuine replacement build');
+    assert.strictEqual(replacementApplied, true, 'source-copy hook did not replace the installed build');
+    assert.strictEqual(executedBytes.length, 2, 'both launches should reach the executable');
+    for (const bytes of executedBytes) {
+      assert.deepStrictEqual(bytes, replacement, 'launcher selected bytes other than the replacement build');
+    }
+    assert.notDeepStrictEqual(originalCopy, replacement, 'fixture replacement must be a distinct build');
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+  }
+}
+
 function testHardlinkFallback() {
   const fx = makeFixture('rush-link-fallback', { realBinary: true });
   try {
-    const exitCode = runLauncherInVm(fx, { failLink: true });
-    assert.strictEqual(exitCode, 0, 'copy fallback failed to launch the installed binary');
+    const exitCode = runLauncherInVm(fx, {
+      failLink: true,
+      beforePin: () => fs.writeFileSync(fx.binPath, 'replaced-after-cache-publish'),
+    });
+    assert.strictEqual(exitCode, 0, 'copy fallback did not launch the cached bytes');
 
     const binCacheDir = path.join(fx.cacheDir, 'rush', 'bin');
     assert.strictEqual(listCacheDirs(binCacheDir).length, 1, 'cache entry missing after copy fallback');
@@ -617,9 +744,12 @@ function testCacheUnavailableFallback() {
     }
   })();
   section('4. concurrent different-build launch', testConcurrentDifferentBuildLaunches);
-  section('5. hardlink fallback', testHardlinkFallback);
-  section('6. hardlink pin survives eviction', testHardlinkPinSurvivesEviction);
-  section('7. fallback when cache is unavailable', testCacheUnavailableFallback);
+  section('5. abandoned launch directory sweep and basename', testAbandonedLaunchDirectorySweep);
+  section('6. warm-cache launch does not copy installed binary', testWarmCacheLaunchDoesNotCopy);
+  section('7. copy replacement uses published-byte hash', testCopyReplacementUsesPublishedHash);
+  section('8. hardlink fallback', testHardlinkFallback);
+  section('9. hardlink pin survives eviction', testHardlinkPinSurvivesEviction);
+  section('10. fallback when cache is unavailable', testCacheUnavailableFallback);
 
   if (failures > 0) {
     process.stderr.write('\n' + failures + ' section(s) FAILED\n');
