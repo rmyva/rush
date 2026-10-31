@@ -12,6 +12,12 @@ func TestMCPMutationReconcilesOnlySelectedDefinitionAndToken(t *testing.T) {
 		apply func(*ConfigStore) error
 	}{
 		{
+			name: "field",
+			apply: func(store *ConfigStore) error {
+				return store.PersistMCPFields(ScopeGlobal, "A", map[string]any{"url": "http://a-updated.example"})
+			},
+		},
+		{
 			name: "field-exact",
 			apply: func(store *ConfigStore) error {
 				return store.PersistMCPFieldsExact(ScopeGlobal, "A", map[string]any{"url": "http://a-updated.example"})
