@@ -14,6 +14,7 @@ import (
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
+	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/db"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
@@ -35,7 +36,7 @@ func newRetryFixture(t *testing.T, sessionID string) *retryFixture {
 	return &retryFixture{
 		svc: svc,
 		ts: &turnStream{
-			a:               &sessionAgent{messages: svc},
+			a:               &sessionAgent{messages: svc, mailboxes: csync.NewMap[string, *mailbox]()},
 			ctx:             t.Context(),
 			genCtx:          t.Context(),
 			call:            SessionAgentCall{SessionID: sessionID},
