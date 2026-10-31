@@ -134,8 +134,8 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		// pinning it to the build-time generation would defeat its purpose
 		// (a peak_hours edit made by another process while this turn is
 		// running must still take effect).
-		PeakHoursCheck: func() error {
-			return c.checkLivePeakHours(smart.ModelCfg.Provider)
+		PeakHoursCheck: func(providerID string) error {
+			return c.checkLivePeakHours(providerID)
 		},
 	})
 

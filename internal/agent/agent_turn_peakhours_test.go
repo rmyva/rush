@@ -8,6 +8,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/PHPCraftdream/rush/internal/config"
 	"github.com/PHPCraftdream/rush/internal/csync"
 	"github.com/PHPCraftdream/rush/internal/message"
 	"github.com/stretchr/testify/require"
@@ -45,11 +46,13 @@ func TestPeakHoursWatcherAbortsTurnAndPersistsFinish(t *testing.T) {
 		checkErr := &PeakHoursError{ProviderID: "acme", Start: "22:00", End: "06:00", ReopensAt: time.Now().Add(8 * time.Hour)}
 
 		checkCalls := 0
+		checkedProvider := make(chan string, 1)
 		a := &sessionAgent{
 			messages:       msgSvc,
 			activeRequests: csync.NewMap[string, context.CancelFunc](),
-			peakHoursCheck: func() error {
+			peakHoursCheck: func(providerID string) error {
 				checkCalls++
+				checkedProvider <- providerID
 				return checkErr
 			},
 		}
@@ -63,7 +66,7 @@ func TestPeakHoursWatcherAbortsTurnAndPersistsFinish(t *testing.T) {
 		genCtx, genCancel := context.WithCancel(t.Context())
 		defer genCancel()
 
-		w := newPeakHoursWatcher(a, "sess-1", t.Context(), genCtx, &sessionLock, &currentAssistant)
+		w := newPeakHoursWatcher(a, "sess-1", "pinned-provider", t.Context(), genCtx, &sessionLock, &currentAssistant)
 		done := w.start()
 
 		// peakHoursPollInterval is 10s; synctest.Wait advances virtual time
@@ -74,6 +77,7 @@ func TestPeakHoursWatcherAbortsTurnAndPersistsFinish(t *testing.T) {
 		<-done
 
 		require.Equal(t, 1, checkCalls, "watcher must stop polling after the first abort, not keep firing")
+		require.Equal(t, "pinned-provider", <-checkedProvider, "watcher must check the turn's pinned provider")
 		require.True(t, cancelCalled, "watcher must cancel the turn via activeRequests once it detects the window")
 		require.ErrorIs(t, w.getAbortErr(), checkErr, "getAbortErr must return the exact error the check produced")
 
@@ -95,7 +99,7 @@ func TestPeakHoursWatcherSecondSetAbortErrLoses(t *testing.T) {
 	a := &sessionAgent{activeRequests: csync.NewMap[string, context.CancelFunc]()}
 	var sessionLock sync.Mutex
 	currentAssistant := &message.Message{ID: "msg-1"}
-	w := newPeakHoursWatcher(a, "sess-1", context.Background(), context.Background(), &sessionLock, &currentAssistant)
+	w := newPeakHoursWatcher(a, "sess-1", "pinned-provider", context.Background(), context.Background(), &sessionLock, &currentAssistant)
 
 	first := &PeakHoursError{ProviderID: "first"}
 	second := &PeakHoursError{ProviderID: "second"}
@@ -113,7 +117,7 @@ func TestPeakHoursWatcherStartWithNoCheckClosesImmediately(t *testing.T) {
 	a := &sessionAgent{}
 	var sessionLock sync.Mutex
 	currentAssistant := &message.Message{}
-	w := newPeakHoursWatcher(a, "sess-1", context.Background(), context.Background(), &sessionLock, &currentAssistant)
+	w := newPeakHoursWatcher(a, "sess-1", "pinned-provider", context.Background(), context.Background(), &sessionLock, &currentAssistant)
 
 	done := w.start()
 	select {
@@ -123,20 +127,39 @@ func TestPeakHoursWatcherStartWithNoCheckClosesImmediately(t *testing.T) {
 	}
 }
 
+func TestPeakHoursStepCheckUsesPinnedProvider(t *testing.T) {
+	var gotProvider string
+	a := &sessionAgent{peakHoursCheck: func(providerID string) error {
+		gotProvider = providerID
+		return nil
+	}}
+	ts := &turnStream{
+		a:          a,
+		call:       SessionAgentCall{SessionID: "sess-1"},
+		smartModel: Model{ModelCfg: config.SelectedModel{Provider: "pinned-provider"}},
+	}
+	ts.setPeakHoursAbortErr = func(error) bool { return true }
+
+	require.NoError(t, ts.recheckPeakHours())
+	require.Equal(t, "pinned-provider", gotProvider)
+}
+
 // A call made with --allow-peak-hours waived the window at turn start; the
 // mid-turn poll and the per-step re-check must not enforce it afterwards,
 // or the turn is aborted right after its first step.
 func TestPeakHoursMidTurnChecksHonorCallBypass(t *testing.T) {
 	var checks atomic.Int32
-	a := &sessionAgent{peakHoursCheck: func() error {
+	checkedProvider := make(chan string, 1)
+	a := &sessionAgent{peakHoursCheck: func(providerID string) error {
 		checks.Add(1)
+		checkedProvider <- providerID
 		return &PeakHoursError{ProviderID: "in-window"}
 	}}
 	call := SessionAgentCall{SessionID: "sess-1", CallOptions: &CallOptions{AllowPeakHours: true}}
 
 	var sessionLock sync.Mutex
 	currentAssistant := &message.Message{}
-	w := newPeakHoursWatcher(a, call.SessionID, context.Background(), context.Background(), &sessionLock, &currentAssistant)
+	w := newPeakHoursWatcher(a, call.SessionID, "pinned-provider", context.Background(), context.Background(), &sessionLock, &currentAssistant)
 	w.bypass = peakHoursBypassed(call)
 	select {
 	case <-w.start():
@@ -144,9 +167,10 @@ func TestPeakHoursMidTurnChecksHonorCallBypass(t *testing.T) {
 		t.Fatal("a bypassed call must not start the peak-hours poll")
 	}
 
-	ts := &turnStream{a: a, call: call}
+	ts := &turnStream{a: a, call: call, smartModel: Model{ModelCfg: config.SelectedModel{Provider: "pinned-provider"}}}
 	require.NoError(t, ts.recheckPeakHours())
 	require.Zero(t, checks.Load(), "the in-window check must not run for a bypassed call")
+	require.Empty(t, checkedProvider, "bypass must not invoke the check callback")
 
 	require.False(t, peakHoursBypassed(SessionAgentCall{}), "no call options: no bypass")
 }

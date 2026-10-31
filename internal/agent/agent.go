@@ -830,13 +830,13 @@ type sessionAgent struct {
 	// See fireCacheKeepAlive and cancelCacheKeepAlive.
 	cacheKeepAliveInFlight *csync.Map[string, cacheKeepAliveInFlightEntry]
 	// peakHoursCheck, when non-nil, is called once per step from
-	// OnStepFinish to re-check whether the smart model's provider has
-	// entered its peak_hours refusal window mid-turn. Returns nil while
+	// OnStepFinish to re-check whether the turn's pinned smart model provider
+	// has entered its peak_hours refusal window mid-turn. Returns nil while
 	// outside the window. Plumbed from coordinator.buildAgent, which is
 	// the only layer with access to config.ProviderConfig — sessionAgent
 	// itself only knows about Model (SelectedModel + catwalk metadata),
 	// not the provider's peak_hours setting.
-	peakHoursCheck func() error
+	peakHoursCheck func(providerID string) error
 
 	// runAllowlists, when non-nil, lets the turn loop activate each call's
 	// carried restricted-run policy (SessionAgentCall.RunAllowlist) at

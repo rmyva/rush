@@ -27,10 +27,11 @@ import (
 // it reaches the coordinator and ultimately RunNonInteractive's stderr
 // output.
 type peakHoursWatcher struct {
-	a         *sessionAgent
-	sessionID string
-	ctx       context.Context
-	genCtx    context.Context
+	a          *sessionAgent
+	sessionID  string
+	providerID string
+	ctx        context.Context
+	genCtx     context.Context
 
 	// sessionLock and assistant are runTurn's own -- shared with every other
 	// streaming callback, never owned here. See turnCheckpointWriter's doc
@@ -52,8 +53,8 @@ func peakHoursBypassed(call SessionAgentCall) bool {
 	return call.CallOptions != nil && call.CallOptions.AllowPeakHours
 }
 
-func newPeakHoursWatcher(a *sessionAgent, sessionID string, ctx, genCtx context.Context, sessionLock *sync.Mutex, assistant **message.Message) *peakHoursWatcher {
-	return &peakHoursWatcher{a: a, sessionID: sessionID, ctx: ctx, genCtx: genCtx, sessionLock: sessionLock, assistant: assistant}
+func newPeakHoursWatcher(a *sessionAgent, sessionID, providerID string, ctx, genCtx context.Context, sessionLock *sync.Mutex, assistant **message.Message) *peakHoursWatcher {
+	return &peakHoursWatcher{a: a, sessionID: sessionID, providerID: providerID, ctx: ctx, genCtx: genCtx, sessionLock: sessionLock, assistant: assistant}
 }
 
 func (w *peakHoursWatcher) setAbortErr(err error) bool {
@@ -93,7 +94,7 @@ func (w *peakHoursWatcher) start() <-chan struct{} {
 			case <-w.genCtx.Done():
 				return
 			case <-ticker.C:
-				pErr := w.a.peakHoursCheck()
+				pErr := w.a.peakHoursCheck(w.providerID)
 				if pErr == nil {
 					continue
 				}

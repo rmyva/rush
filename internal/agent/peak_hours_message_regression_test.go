@@ -73,10 +73,14 @@ func TestPeakHoursWatcher_PersistsOperatorMessage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		msgSvc := &fakePeakHoursMsgSvc{}
 		checkErr := &PeakHoursError{ProviderID: "zai", Start: "20:49", End: "23:59", ReopensAt: time.Now().Add(3 * time.Hour), Message: regressionPeakMessage}
+		checkedProvider := make(chan string, 1)
 		a := &sessionAgent{
 			messages:       msgSvc,
 			activeRequests: csync.NewMap[string, context.CancelFunc](),
-			peakHoursCheck: func() error { return checkErr },
+			peakHoursCheck: func(providerID string) error {
+				checkedProvider <- providerID
+				return checkErr
+			},
 		}
 		a.activeRequests.Set("sess-1", func() {})
 
@@ -85,10 +89,12 @@ func TestPeakHoursWatcher_PersistsOperatorMessage(t *testing.T) {
 		genCtx, genCancel := context.WithCancel(t.Context())
 		defer genCancel()
 
-		w := newPeakHoursWatcher(a, "sess-1", t.Context(), genCtx, &sessionLock, &assistant)
+		w := newPeakHoursWatcher(a, "sess-1", "pinned-provider", t.Context(), genCtx, &sessionLock, &assistant)
 		done := w.start()
 		synctest.Wait()
 		<-done
+
+		require.Equal(t, "pinned-provider", <-checkedProvider, "watcher must check the turn's pinned provider")
 
 		msgSvc.mu.Lock()
 		persisted := msgSvc.lastUpdated

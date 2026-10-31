@@ -752,7 +752,7 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 
 	// Aborts this turn when the provider enters its peak-hours window
 	// mid-stream. See peakHoursWatcher's doc in agent_turn_peakhours.go.
-	peakHours := newPeakHoursWatcher(a, call.SessionID, ctx, genCtx, &ts.mu, &ts.currentAssistant)
+	peakHours := newPeakHoursWatcher(a, call.SessionID, ts.smartModel.ModelCfg.Provider, ctx, genCtx, &ts.mu, &ts.currentAssistant)
 	peakHours.bypass = peakHoursBypassed(call)
 	ts.setPeakHoursAbortErr = peakHours.setAbortErr
 	getPeakHoursAbortErr := peakHours.getAbortErr

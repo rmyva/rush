@@ -792,7 +792,7 @@ func (ts *turnStream) recheckPeakHours() error {
 	if ts.a.peakHoursCheck == nil || peakHoursBypassed(ts.call) {
 		return nil
 	}
-	pErr := ts.a.peakHoursCheck()
+	pErr := ts.a.peakHoursCheck(ts.smartModel.ModelCfg.Provider)
 	if pErr == nil {
 		return nil
 	}

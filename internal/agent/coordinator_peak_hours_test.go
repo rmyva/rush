@@ -180,6 +180,37 @@ func TestSetAllowPeakHours_OneShotReset(t *testing.T) {
 	assert.False(t, allow2, "after consume the flag is reset")
 }
 
+func TestBuildAgentPeakHoursCheckUsesPassedProvider(t *testing.T) {
+	env := testEnv(t)
+	coord := newToolPinningCoordinator(t, env, false)
+
+	passedProvider := config.ProviderConfig{
+		ID:        "passed-provider",
+		Type:      "openai",
+		PeakHours: peakWindowAroundNow(),
+		Models:    []catwalk.Model{{ID: "passed-model", Name: "Passed Model", DefaultMaxTokens: 4096}},
+	}
+	coord.cfg.Config().Providers.Set(passedProvider.ID, passedProvider)
+
+	coderCfg, ok := coord.cfg.Config().Agents[config.AgentCoder]
+	require.True(t, ok, "coder agent must be configured")
+	sa, err := coord.buildAgent(t.Context(), coord.prompt, coderCfg, false)
+	require.NoError(t, err)
+	require.NoError(t, coord.readyWg.Wait(), "agent build must complete")
+
+	builtAgent, ok := sa.(*sessionAgent)
+	require.True(t, ok, "buildAgent must return a *sessionAgent")
+	require.NotNil(t, builtAgent.peakHoursCheck)
+
+	err = builtAgent.peakHoursCheck(passedProvider.ID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errProviderPeakHours)
+	var peakErr *PeakHoursError
+	require.ErrorAs(t, err, &peakErr)
+	assert.Equal(t, passedProvider.ID, peakErr.ProviderID,
+		"the installed callback must check the turn-passed provider, not the build-time smart provider")
+}
+
 func TestCheckLivePeakHours_ReloadsDirtyConfig(t *testing.T) {
 	// Legacy-JSON fixture test: it rewrites rush.json at its literal path
 	// after config.Init and expects the live reload to see it, so the gate
