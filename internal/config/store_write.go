@@ -275,6 +275,28 @@ func (s *ConfigStore) withConfigWriteLockCtx(ctx context.Context, path string, f
 		}
 		target = updated
 	}
+	// Migration and writes share the legacy sidecar. If migration was
+	// interrupted after publishing Ktav, finish its authenticated transaction
+	// here without reacquiring that lock; then resolve the active slot again
+	// because recovery may have changed its spelling or fingerprint.
+	legacy := legacySlotOf(target.selectedPath)
+	if ktavEntryExists(migrationRecordPathFor(legacy)) {
+		if err := runKtavMigrationStateLocked(ctx, legacy, s.workingDir); err != nil {
+			_ = releaseConfigFileLock(target.lockPath, lock)
+			return fmt.Errorf("failed to recover config migration for %q: %w", path, err)
+		}
+		selected = writeTargetSlot(path)
+		updated, resolveErr := s.resolveConfigWriteTarget(selected)
+		if resolveErr != nil {
+			_ = releaseConfigFileLock(target.lockPath, lock)
+			return fmt.Errorf("failed to resolve config file %q after recovery: %w", path, resolveErr)
+		}
+		if updated.lockPath != target.lockPath {
+			_ = releaseConfigFileLock(target.lockPath, lock)
+			return fmt.Errorf("config write lock anchor changed for %q after recovery", path)
+		}
+		target = updated
+	}
 	if err := verifyConfigWriteTarget(target); err != nil {
 		_ = releaseConfigFileLock(target.lockPath, lock)
 		return fmt.Errorf("failed to verify config file %q: %w", path, err)
