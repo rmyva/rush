@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 
 	"charm.land/fantasy"
 	"github.com/PHPCraftdream/rush/internal/filepathext"
@@ -81,7 +82,8 @@ func NewFSDeleteTool(scope permission.FolderScope, permissions permission.Servic
 				PathOf: func(i FSDeleteItem) string {
 					return i.Path
 				},
-				Preflight: fsDeletePreflight,
+				Preflight:   fsDeletePreflight,
+				ResolvePath: fsDeleteResolvePath,
 				Execute: func(ctx context.Context, group FSBatchGroup[FSDeleteItem]) ([]FSItemOutcome, error) {
 					return fsDeleteExecuteGroup(ctx, disk, group)
 				},
@@ -91,8 +93,20 @@ func NewFSDeleteTool(scope permission.FolderScope, permissions permission.Servic
 	)
 }
 
-// fsDeletePreflight grants delete unconditionally: existence is verified
-// during execution, where the regular-file check happens anyway.
+// fsDeleteResolvePath resolves parent components (including parent symlinks)
+// while retaining the final entry's own name. Deleting a symlink acts on the
+// link itself, so its target must not affect containment.
+func fsDeleteResolvePath(ctx context.Context, disk DiskProvider, workingDir, raw string) (string, error) {
+	joined := filepath.Clean(filepathext.SmartJoin(workingDir, raw))
+	parent, err := resolveScopedPath(ctx, disk, workingDir, filepath.Dir(joined))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(joined)), nil
+}
+
+// fsDeletePreflight grants delete unconditionally: existence and type are
+// verified during execution, where the lstat check happens anyway.
 func fsDeletePreflight(_ context.Context, item FSDeleteItem, _ int, _ string) (permission.FileOp, error) {
 	return permission.FileOpDelete, nil
 }
@@ -107,6 +121,11 @@ func fsDeleteExecuteGroup(ctx context.Context, disk DiskProvider, group FSBatchG
 
 	for i := range group.Items {
 		info, err := disk.Stat(ctx, group.Path)
+		if lstat, ok := disk.(interface {
+			Lstat(context.Context, string) (fs.FileInfo, error)
+		}); ok {
+			info, err = lstat.Lstat(ctx, group.Path)
+		}
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				outcomes[i] = FSItemOutcome{
@@ -128,7 +147,7 @@ func fsDeleteExecuteGroup(ctx context.Context, disk DiskProvider, group FSBatchG
 			}
 			continue
 		}
-		if !info.Mode().IsRegular() {
+		if !info.Mode().IsRegular() && info.Mode()&fs.ModeSymlink == 0 {
 			outcomes[i] = FSItemOutcome{
 				Status: FSStatusFailed,
 				Error:  fmt.Sprintf("%s is not a regular file", group.Path),

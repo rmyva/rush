@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"charm.land/fantasy"
@@ -72,8 +73,11 @@ func TestFSDeleteRefusesDirectory(t *testing.T) {
 	require.NoError(t, statErr)
 }
 
-func TestFSDeleteRefusesSymlinkEscape(t *testing.T) {
+func TestFSDeleteRemovesSymlinkWithoutFollowingOutsideTarget(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("real symlink behavior is covered on non-Windows platforms")
+	}
 	// Symlink tests do not skip on GOOS; they skip only if the OS
 	// refuses to create the symlink (see fs_scope_test.go).
 	tmp := t.TempDir()
@@ -101,10 +105,72 @@ func TestFSDeleteRefusesSymlinkEscape(t *testing.T) {
 
 	var meta FSBatchResponseMetadata
 	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
-	require.Equal(t, FSStatusDenied, meta.Items[0].Status)
+	require.Equal(t, FSStatusOK, meta.Items[0].Status)
 
+	_, linkErr := os.Lstat(filepath.Join(root, "link.txt"))
+	require.True(t, os.IsNotExist(linkErr), "named symlink should be removed")
 	_, statErr := os.Stat(target)
-	require.NoError(t, statErr)
+	require.NoError(t, statErr, "outside symlink target must remain")
+}
+
+func TestFSDeleteContainmentUsesSymlinkOwnPath(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("real symlink behavior is covered on non-Windows platforms")
+	}
+	tmp := t.TempDir()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "sess-delete")
+	inside := filepath.Join(tmp, "inside")
+	outside := filepath.Join(tmp, "outside")
+	require.NoError(t, os.MkdirAll(inside, 0o755))
+	require.NoError(t, os.MkdirAll(outside, 0o755))
+	target := filepath.Join(inside, "target.txt")
+	require.NoError(t, os.WriteFile(target, []byte("inside"), 0o644))
+	link := filepath.Join(outside, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	scope := fsWriteTestScope(t, tmp, permission.FolderScopeEntry{
+		Dir: "inside",
+		Ops: []permission.FileOp{permission.FileOpDelete},
+	})
+	tool := NewFSDeleteTool(scope, &mockPermissionService{}, tmp, nil)
+	resp, err := fsDeleteRun(t, ctx, tool, FSDeleteParams{Items: []FSDeleteItem{{Path: link}}})
+	require.NoError(t, err)
+	var meta FSBatchResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.Equal(t, FSStatusDenied, meta.Items[0].Status)
+	require.FileExists(t, link)
+	require.FileExists(t, target)
+}
+
+func TestFSDeleteParentSymlinkContainmentStillResolves(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("real symlink behavior is covered on non-Windows platforms")
+	}
+	tmp := t.TempDir()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "sess-delete")
+	inside := filepath.Join(tmp, "inside")
+	outside := filepath.Join(tmp, "outside")
+	require.NoError(t, os.MkdirAll(inside, 0o755))
+	require.NoError(t, os.MkdirAll(outside, 0o755))
+	target := filepath.Join(outside, "target.txt")
+	require.NoError(t, os.WriteFile(target, []byte("outside"), 0o644))
+	if err := os.Symlink(outside, filepath.Join(inside, "parent")); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	scope := fsWriteTestScope(t, tmp, permission.FolderScopeEntry{
+		Dir: "inside",
+		Ops: []permission.FileOp{permission.FileOpDelete},
+	})
+	tool := NewFSDeleteTool(scope, &mockPermissionService{}, tmp, nil)
+	resp, err := fsDeleteRun(t, ctx, tool, FSDeleteParams{Items: []FSDeleteItem{{Path: filepath.Join("inside", "parent", "target.txt")}}})
+	require.NoError(t, err)
+	var meta FSBatchResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.Equal(t, FSStatusDenied, meta.Items[0].Status)
+	require.FileExists(t, target)
 }
 
 func TestFSDeleteMissingFileFailsPerItem(t *testing.T) {

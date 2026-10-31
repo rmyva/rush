@@ -140,7 +140,7 @@ func fsWriteExecuteGroup(ctx context.Context, scope permission.FolderScope, file
 
 	outcomes := make([]FSItemOutcome, len(group.Items))
 
-	_, statErr := disk.Stat(ctx, group.Path)
+	info, statErr := disk.Stat(ctx, group.Path)
 	exists := statErr == nil
 	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
 		for i := range outcomes {
@@ -150,6 +150,17 @@ func fsWriteExecuteGroup(ctx context.Context, scope permission.FolderScope, file
 			}
 		}
 		return outcomes, nil
+	}
+
+	if exists {
+		if !info.IsDir() {
+			if resp, tooLarge := checkEditFileSize(group.Path, info.Size()); tooLarge {
+				for i := range outcomes {
+					outcomes[i] = FSItemOutcome{Status: FSStatusFailed, Error: resp.Content}
+				}
+				return outcomes, nil
+			}
+		}
 	}
 
 	op := permission.FileOpCreate

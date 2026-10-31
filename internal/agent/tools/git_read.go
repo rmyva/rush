@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/fantasy"
@@ -188,6 +189,34 @@ func pathInsideWorkingDir(workingDir, path string) string {
 	return ""
 }
 
+// gitReadOutputBuffer bounds bytes retained from the child process while still
+// reporting writes as fully consumed so git can finish normally.
+type gitReadOutputBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+	limit int
+}
+
+func (b *gitReadOutputBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	written := len(p)
+	if remaining := b.limit - b.Len(); remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		_, _ = b.Buffer.Write(p)
+	}
+	return written, nil
+}
+
+func (b *gitReadOutputBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.String()
+}
+
 // NewGitReadTool builds the read-only git tool scoped to workingDir.
 func NewGitReadTool(workingDir string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
@@ -217,9 +246,9 @@ func NewGitReadTool(workingDir string) fantasy.AgentTool {
 
 			cmd := platform.Command(runCtx, "git", args...)
 			cmd.Dir = workingDir
-			var out bytes.Buffer
-			cmd.Stdout = &out
-			cmd.Stderr = &out
+			out := &gitReadOutputBuffer{limit: MaxOutputLength + 1}
+			cmd.Stdout = out
+			cmd.Stderr = out
 			err := cmd.Run()
 			if err != nil {
 				text := strings.TrimSpace(truncateOutput(out.String()))

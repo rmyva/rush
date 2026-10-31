@@ -119,6 +119,23 @@ func snapshotGitRepo(t *testing.T, dir string) gitRepoSnapshot {
 	return snap
 }
 
+func TestGitReadOutputBufferCapsCapturedOutput(t *testing.T) {
+	var out gitReadOutputBuffer
+	out.limit = MaxOutputLength + 1
+
+	first := strings.Repeat("a", MaxOutputLength)
+	written, err := out.Write([]byte(first))
+	require.NoError(t, err)
+	assert.Equal(t, len(first), written)
+
+	second := strings.Repeat("b", MaxOutputLength)
+	written, err = out.Write([]byte(second))
+	require.NoError(t, err)
+	assert.Equal(t, len(second), written)
+	assert.Len(t, out.Bytes(), MaxOutputLength+1)
+	assert.True(t, strings.HasSuffix(out.String(), "b"))
+}
+
 func TestGitRead_HappyPath_EachOperation(t *testing.T) {
 	t.Parallel()
 

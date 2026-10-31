@@ -118,6 +118,36 @@ func TestDownloadTool_SuccessfulDownloadWritesCompleteFile(t *testing.T) {
 	require.Equal(t, content, string(got))
 }
 
+func TestDownloadTool_ForbiddenSymlinkTargetNotReplaced(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges on Windows")
+	}
+	const original = "preserve this content"
+	workingDir := t.TempDir()
+	realDir := filepath.Join(workingDir, "real")
+	aliasDir := filepath.Join(workingDir, "alias")
+	require.NoError(t, os.Mkdir(realDir, 0o755))
+	target := filepath.Join(realDir, "blocked.txt")
+	require.NoError(t, os.WriteFile(target, []byte(original), 0o644))
+	require.NoError(t, os.Symlink(realDir, aliasDir))
+	t.Setenv(ForbiddenWritesEnv, target)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("replacement"))
+	}))
+	t.Cleanup(server.Close)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	tool := NewDownloadTool(&mockPermissionService{}, workingDir, NewSSRFGuardedClient(5*time.Second, true))
+	input, err := json.Marshal(DownloadParams{URL: server.URL, FilePath: filepath.Join("alias", "blocked.txt")})
+	require.NoError(t, err)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "call", Name: DownloadToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, ForbiddenWritesEnv)
+	got, err := os.ReadFile(target)
+	require.NoError(t, err)
+	require.Equal(t, original, string(got))
+}
+
 // TestDownloadTool_WritesFileWithReadablePermissions is the regression test
 // for a gap an independent @oh review found in the temp-file+rename fix
 // above: os.CreateTemp creates its file 0600 (owner-only), and unlike

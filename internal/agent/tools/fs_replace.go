@@ -160,6 +160,13 @@ func fsReplaceExecuteGroup(ctx context.Context, scope permission.FolderScope, fi
 		return outcomes, nil
 	}
 
+	if resp, tooLarge := checkEditFileSize(group.Path, info.Size()); tooLarge {
+		for i := range outcomes {
+			outcomes[i] = FSItemOutcome{Status: FSStatusFailed, Error: resp.Content}
+		}
+		return outcomes, nil
+	}
+
 	lastRead := filetracker.LastReadTime(ctx, sessionID, group.Path)
 	if lastRead.IsZero() {
 		notRead := "you must read the file before replacing content in it. Use the fs_read tool first"

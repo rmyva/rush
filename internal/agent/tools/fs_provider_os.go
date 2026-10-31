@@ -67,6 +67,10 @@ func (osDisk) Stat(_ context.Context, name string) (fs.FileInfo, error) {
 	return os.Stat(name)
 }
 
+func (osDisk) Lstat(_ context.Context, name string) (fs.FileInfo, error) {
+	return os.Lstat(name)
+}
+
 func (osDisk) EvalSymlinks(_ context.Context, name string) (string, error) {
 	return filepath.EvalSymlinks(name)
 }

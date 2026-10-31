@@ -77,6 +77,9 @@ func NewWriteTool(
 				if fileInfo.IsDir() {
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("Path is a directory, not a file: %s", filePath)), nil
 				}
+				if resp, tooLarge := checkEditFileSize(filePath, fileInfo.Size()); tooLarge {
+					return resp, nil
+				}
 
 				modTime := fileInfo.ModTime().Truncate(time.Second)
 				lastRead := filetracker.LastReadTime(ctx, sessionID, filePath)
@@ -103,14 +106,6 @@ func NewWriteTool(
 			}
 
 			dir := filepath.Dir(filePath)
-			if err = os.MkdirAll(dir, 0o755); err != nil {
-				if osFailureIsFatal(err) {
-					return fantasy.ToolResponse{}, fmt.Errorf("error creating directory: %w", err)
-				}
-				return fantasy.NewTextErrorResponse(fmt.Sprintf(
-					"Cannot create the parent directory for %s: %v. A path component is a file rather than a directory, the target exists with different permissions, or the OS refused to create it. Nothing was written. Try a different path or a corrected form of this one.",
-					filePath, err)), nil
-			}
 
 			oldContent := ""
 			if fileInfo != nil && !fileInfo.IsDir() {
@@ -155,6 +150,18 @@ func NewWriteTool(
 				return resp, nil
 			}
 
+			if err = os.MkdirAll(dir, 0o755); err != nil {
+				if osFailureIsFatal(err) {
+					return fantasy.ToolResponse{}, fmt.Errorf("error creating directory: %w", err)
+				}
+				return fantasy.NewTextErrorResponse(fmt.Sprintf(
+					"Cannot create the parent directory for %s: %v. A path component is a file rather than a directory, the target exists with different permissions, or the OS refused to create it. Nothing was written. Try a different path or a corrected form of this one.",
+					filePath, err)), nil
+			}
+
+			if err = CheckForbiddenWriteResolved(filePath); err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
 			err = fsext.AtomicWriteFile(filePath, []byte(params.Content), 0o644)
 			if err != nil {
 				if osFailureIsFatal(err) {

@@ -255,6 +255,10 @@ type FSBatch[I any] struct {
 	// here, so path resolution and execution always agree on which
 	// filesystem is in play.
 	Disk DiskProvider
+	// ResolvePath optionally overrides the default symlink-resolving path
+	// resolver. The returned path is the path checked against Scope and used
+	// for execution.
+	ResolvePath func(ctx context.Context, disk DiskProvider, workingDir, raw string) (string, error)
 }
 
 // fsBatchGroupEntry pairs one scheduled item with its slot in the
@@ -300,7 +304,11 @@ func RunFSBatch[I any](ctx context.Context, batch FSBatch[I]) (fantasy.ToolRespo
 		result := FSItemResult{Index: i, Path: batch.PathOf(item)}
 		results[i] = result
 
-		abs, err := resolveScopedPath(ctx, disk, batch.WorkingDir, result.Path)
+		resolver := batch.ResolvePath
+		if resolver == nil {
+			resolver = resolveScopedPath
+		}
+		abs, err := resolver(ctx, disk, batch.WorkingDir, result.Path)
 		if err != nil {
 			// Fail closed: a path that cannot be resolved cannot be
 			// judged safe.

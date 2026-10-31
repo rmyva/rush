@@ -86,6 +86,9 @@ func NewDownloadTool(permissions permission.Service, workingDir string, client *
 			}
 
 			filePath := filepathext.SmartJoin(workingDir, params.FilePath)
+			if err := CheckForbiddenWriteResolved(filePath); err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
 			relPath, _ := filepath.Rel(workingDir, filePath)
 			relPath = filepath.ToSlash(cmp.Or(relPath, filePath))
 
@@ -239,6 +242,10 @@ func NewDownloadTool(permissions permission.Service, workingDir string, client *
 				return fantasy.NewTextErrorResponse(fmt.Sprintf(
 					"Could not close the temporary file for %s: %v. The temporary file was cleaned up and nothing was saved. Retry the download or use a different path.",
 					filePath, err)), nil
+			}
+			if err := CheckForbiddenWriteResolved(filePath); err != nil {
+				cleanupTmp()
+				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 			if err := os.Rename(tmpPath, filePath); err != nil {
 				cleanupTmp()

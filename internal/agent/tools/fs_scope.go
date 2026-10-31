@@ -157,7 +157,8 @@ func resolveScopedPath(ctx context.Context, disk DiskProvider, workingDir, raw s
 // runs. A hostile local process that swaps a symlink between this
 // resolution and the later filesystem operation (TOCTOU) is not defended
 // against; closing that would need handle-relative filesystem
-// primitives.
+// primitives. Reopening the resolved pathname can therefore observe a
+// different target.
 func CanonicalizeFolderScopeSpec(ctx context.Context, disk DiskProvider, spec permission.FolderScopeSpec) (permission.FolderScopeSpec, error) {
 	disk = diskOrOS(disk)
 

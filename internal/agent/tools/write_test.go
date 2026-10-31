@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -22,6 +23,30 @@ func (m mockFileTrackerService) LastReadTime(ctx context.Context, sessionID, pat
 
 func (m mockFileTrackerService) ListReadFiles(ctx context.Context, sessionID string) ([]string, error) {
 	return nil, nil
+}
+
+func TestWriteToolForbiddenTargetThroughSymlinkedParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges on Windows")
+	}
+
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	aliasDir := filepath.Join(root, "alias")
+	require.NoError(t, os.Mkdir(realDir, 0o755))
+	require.NoError(t, os.Symlink(realDir, aliasDir))
+	blocked := filepath.Join(realDir, "blocked.txt")
+	t.Setenv(ForbiddenWritesEnv, blocked)
+
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	tool := NewWriteTool(&mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, root)
+	input, err := json.Marshal(WriteParams{FilePath: filepath.Join("alias", "blocked.txt"), Content: "must not write"})
+	require.NoError(t, err)
+	resp, err := tool.Run(ctx, fantasy.ToolCall{ID: "test-call", Name: WriteToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, ForbiddenWritesEnv)
+	require.NoFileExists(t, blocked)
 }
 
 func TestWriteToolWritesEmptyNewFile(t *testing.T) {

@@ -227,6 +227,9 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 	}
 
 	// Write the file
+	if err := CheckForbiddenWriteResolved(params.FilePath); err != nil {
+		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
 	err = fsext.AtomicWriteFile(params.FilePath, []byte(currentContent), 0o644)
 	if err != nil {
 		if osFailureIsFatal(err) {

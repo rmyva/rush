@@ -11,6 +11,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCheckForbiddenWriteResolvedBlocksSymlinkedTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges on Windows")
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "target.txt")
+	link := filepath.Join(root, "link.txt")
+	require.NoError(t, os.WriteFile(target, []byte("original"), 0o644))
+	require.NoError(t, os.Symlink(target, link))
+	t.Setenv(ForbiddenWritesEnv, target)
+	require.ErrorContains(t, CheckForbiddenWriteResolved(link), ForbiddenWritesEnv)
+}
+
+func TestCheckForbiddenWriteResolvedNonexistentTailThroughSymlinkParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges on Windows")
+	}
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	linkDir := filepath.Join(root, "alias")
+	require.NoError(t, os.Mkdir(realDir, 0o755))
+	require.NoError(t, os.Symlink(realDir, linkDir))
+	target := filepath.Join(realDir, "new.txt")
+	t.Setenv(ForbiddenWritesEnv, target)
+	require.ErrorContains(t, CheckForbiddenWriteResolved(filepath.Join(linkDir, "new.txt")), ForbiddenWritesEnv)
+}
+
+func TestCheckForbiddenWriteResolved_AllowsUnrelatedPath(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(ForbiddenWritesEnv, filepath.Join(root, "blocked.txt"))
+	require.NoError(t, CheckForbiddenWriteResolved(filepath.Join(root, "allowed.txt")))
+}
+
 func TestCheckForbiddenWrite_NoEnvVar_AllowsAll(t *testing.T) {
 	t.Setenv(ForbiddenWritesEnv, "")
 	require.NoError(t, CheckForbiddenWrite(filepath.Join(t.TempDir(), "anything.txt")))

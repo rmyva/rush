@@ -158,14 +158,6 @@ func createNewFile(edit editContext, filePath, content string, call fantasy.Tool
 	}
 
 	dir := filepath.Dir(filePath)
-	if err = os.MkdirAll(dir, 0o755); err != nil {
-		if osFailureIsFatal(err) {
-			return fantasy.ToolResponse{}, fmt.Errorf("failed to create parent directories: %w", err)
-		}
-		return fantasy.NewTextErrorResponse(fmt.Sprintf(
-			"Cannot create the parent directory for %s: %v. A path component is a file rather than a directory, the target exists with different permissions, or the OS refused to create it. The file was not created and nothing was written. Try a different path or a corrected form of this one.",
-			filePath, err)), nil
-	}
 
 	sessionID := GetSessionFromContext(edit.ctx)
 	if sessionID == "" {
@@ -207,6 +199,21 @@ func createNewFile(edit editContext, filePath, content string, call fantasy.Tool
 		return resp, nil
 	}
 
+	if err := CheckForbiddenWriteResolved(filePath); err != nil {
+		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
+	if err = os.MkdirAll(dir, 0o755); err != nil {
+		if osFailureIsFatal(err) {
+			return fantasy.ToolResponse{}, fmt.Errorf("failed to create parent directories: %w", err)
+		}
+		return fantasy.NewTextErrorResponse(fmt.Sprintf(
+			"Cannot create the parent directory for %s: %v. A path component is a file rather than a directory, the target exists with different permissions, or the OS refused to create it. The file was not created and nothing was written. Try a different path or a corrected form of this one.",
+			filePath, err)), nil
+	}
+
+	if err := CheckForbiddenWriteResolved(filePath); err != nil {
+		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
 	err = fsext.AtomicWriteFile(filePath, []byte(content), 0o644)
 	if err != nil {
 		if osFailureIsFatal(err) {
@@ -281,6 +288,9 @@ func findAndReplace(content, old, new string, replaceAll bool) (string, error) {
 // rename) instead of os.WriteFile so a kill -9 / OOM mid-write cannot leave
 // the user's file half-truncated. See CHANGELOG.fork.md (Section 4.I).
 func commitFileChange(edit editContext, sessionID, filePath, oldContent, newContent string) (fantasy.ToolResponse, error) {
+	if err := CheckForbiddenWriteResolved(filePath); err != nil {
+		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
 	if err := diskOrOS(edit.disk).WriteFile(edit.ctx, filePath, []byte(newContent), 0o644); err != nil {
 		if osFailureIsFatal(err) {
 			return fantasy.ToolResponse{}, fmt.Errorf("failed to write file: %w", err)

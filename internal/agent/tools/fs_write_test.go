@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"charm.land/fantasy"
@@ -42,6 +43,47 @@ func fsWriteRun(t *testing.T, ctx context.Context, tool fantasy.AgentTool, param
 	raw, err := json.Marshal(params)
 	require.NoError(t, err)
 	return tool.Run(ctx, fantasy.ToolCall{ID: "call", Name: FSWriteToolName, Input: string(raw)})
+}
+
+func TestFSWriteForbiddenResolvedTargetIsDenied(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "sess-forbidden")
+	target := filepath.Join(dir, "blocked.txt")
+	t.Setenv(ForbiddenWritesEnv, target)
+	tool := NewFSWriteTool(fsWriteTestScope(t, dir), &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir, nil)
+	resp, err := fsWriteRun(t, ctx, tool, FSWriteParams{Items: []FSWriteItem{{Path: "blocked.txt", Content: "must not write"}}})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, ForbiddenWritesEnv)
+	_, statErr := os.Stat(target)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestFSWriteForbiddenAliasTargetIsDenied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges on Windows")
+	}
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "real")
+	aliasDir := filepath.Join(dir, "alias")
+	require.NoError(t, os.Mkdir(realDir, 0o755))
+	require.NoError(t, os.Symlink(realDir, aliasDir))
+	blocked := filepath.Join(realDir, "blocked.txt")
+	t.Setenv(ForbiddenWritesEnv, blocked)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "sess-forbidden")
+	tool := NewFSWriteTool(fsWriteTestScope(t, dir), &mockPermissionService{}, &mockHistoryService{}, mockFileTrackerService{}, dir, nil)
+	resp, err := fsWriteRun(t, ctx, tool, FSWriteParams{Items: []FSWriteItem{{Path: filepath.Join("alias", "blocked.txt"), Content: "must not write"}}})
+	require.NoError(t, err)
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, ForbiddenWritesEnv)
+	var meta FSBatchResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
+	require.Equal(t, 0, meta.Succeeded)
+	require.Equal(t, 1, meta.Failed)
+	require.Equal(t, FSStatusFailed, meta.Items[0].Status)
+	require.Contains(t, meta.Items[0].Error, ForbiddenWritesEnv)
+	_, statErr := os.Stat(blocked)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 func TestFSWriteCreateVsOverwrite(t *testing.T) {
