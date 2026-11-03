@@ -619,6 +619,10 @@ func TestAPITokenBootstrapRecordsAreDeepCopies(t *testing.T) {
 	}
 }
 
+// apiTokenLockContentionObservationWindow remains wall-clock based because the
+// available hooks bracket lock acquisition but cannot signal that B is blocked inside it.
+const apiTokenLockContentionObservationWindow = 300 * time.Millisecond
+
 // Mutant check: removing the cross-store file lock lets B complete while A is held in its mutation hook.
 func TestAPITokenConcurrentCreateLockIsDeterministic(t *testing.T) {
 	isolateAllGlobalConfigPaths(t)
@@ -672,7 +676,7 @@ func TestAPITokenConcurrentCreateLockIsDeterministic(t *testing.T) {
 	case got := <-bDone:
 		close(release)
 		t.Fatalf("B completed while A held lock: %v", got.err)
-	case <-time.After(300 * time.Millisecond):
+	case <-time.After(apiTokenLockContentionObservationWindow):
 	}
 	close(release)
 	var ar, br result

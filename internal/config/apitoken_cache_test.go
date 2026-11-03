@@ -111,8 +111,13 @@ func TestAPITokenConcurrentReadersAndMutations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := <-readerDone; err != nil {
-		t.Fatal(err)
+	select {
+	case err := <-readerDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for readerDone")
 	}
 
 	for _, token := range revoked {
