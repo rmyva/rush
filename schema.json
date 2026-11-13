@@ -107,6 +107,17 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "FinalizationOptions": {
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable agent finalization for batch agents. Default false.",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "HookConfig": {
       "properties": {
         "name": {
@@ -558,6 +569,10 @@
           "type": "boolean",
           "description": "Autonomously resume an idle session when a background job finishes (web/interactive). Default false (opt-in). Bounded by an internal consecutive-resume cap",
           "default": false
+        },
+        "finalization": {
+          "$ref": "#/$defs/FinalizationOptions",
+          "description": "Agent finalization (batch agents): hold the final answer until children finish, reaction debts settle, there is no cancellation and no open mutations. Default: false."
         }
       },
       "additionalProperties": false,
