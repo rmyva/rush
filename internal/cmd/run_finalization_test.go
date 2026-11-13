@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -16,11 +17,33 @@ import (
 // fakeRunTerminalGate is an in-memory gate stub: it counts calls and can
 // block AwaitSealed on a channel until the test releases it.
 type fakeRunTerminalGate struct {
-	allow      bool
-	sealed     <-chan struct{}
-	awaitErr   error
+	allow    bool
+	sealed   <-chan struct{}
+	awaitErr error
+
 	allowCalls atomic.Int32
 	awaitCalls atomic.Int32
+
+	mu          sync.Mutex
+	awaitOwners []string
+
+	entered   chan struct{}
+	enterOnce sync.Once
+}
+
+// awaitEntered returns a channel closed the first time AwaitSealed starts.
+func (g *fakeRunTerminalGate) awaitEntered() <-chan struct{} {
+	if g.entered == nil {
+		g.entered = make(chan struct{})
+	}
+	return g.entered
+}
+
+// awaitedOwners returns every owner passed to AwaitSealed, in order.
+func (g *fakeRunTerminalGate) awaitedOwners() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.awaitOwners...)
 }
 
 // AllowTerminal counts the call and returns the configured verdict.
@@ -29,10 +52,19 @@ func (g *fakeRunTerminalGate) AllowTerminal(context.Context, string) bool {
 	return g.allow
 }
 
-// AwaitSealed counts the call, waits for the sealed channel or ctx, then
-// returns the configured error (nil by default).
-func (g *fakeRunTerminalGate) AwaitSealed(ctx context.Context, _ string) error {
+// AwaitSealed counts the call, records the owner, signals entry, waits for
+// the sealed channel or ctx, then returns the configured error (nil by
+// default).
+func (g *fakeRunTerminalGate) AwaitSealed(ctx context.Context, owner string) error {
 	g.awaitCalls.Add(1)
+	g.mu.Lock()
+	g.awaitOwners = append(g.awaitOwners, owner)
+	g.mu.Unlock()
+	g.enterOnce.Do(func() {
+		if g.entered != nil {
+			close(g.entered)
+		}
+	})
 	if g.sealed != nil {
 		select {
 		case <-g.sealed:
@@ -73,7 +105,7 @@ func TestRunNonInteractiveAwaitingSealInertGateDeliversLegacyOutput(t *testing.T
 	}
 
 	res, err := runNonInteractiveAwaitingSeal(
-		t.Context(), gate, "s1", rec, run,
+		t.Context(), gate, "s1", rec, run, nil,
 	)
 
 	require.NoError(t, err)
@@ -101,7 +133,7 @@ func TestRunNonInteractiveAwaitingSealAllowingStubSkipsAwait(t *testing.T) {
 	}
 
 	res, err := runNonInteractiveAwaitingSeal(
-		t.Context(), gate, "s2", rec, run,
+		t.Context(), gate, "s2", rec, run, nil,
 	)
 
 	require.NoError(t, err)
@@ -131,7 +163,7 @@ func TestRunNonInteractiveAwaitingSealHoldsOutputUntilSealed(t *testing.T) {
 	go func() {
 		var runErr error
 		res, runErr = runNonInteractiveAwaitingSeal(
-			t.Context(), gate, "s3", rec, run,
+			t.Context(), gate, "s3", rec, run, nil,
 		)
 		finished <- runErr
 	}()
@@ -168,7 +200,7 @@ func TestRunNonInteractiveAwaitingSealRefusesDeliveryWhenAwaitFails(t *testing.T
 	}
 
 	res, err := runNonInteractiveAwaitingSeal(
-		t.Context(), gate, "s4", rec, run,
+		t.Context(), gate, "s4", rec, run, nil,
 	)
 
 	require.Error(t, err)
@@ -198,7 +230,7 @@ func TestRunNonInteractiveAwaitingSealCanceledContextWhileWaiting(t *testing.T) 
 	}
 
 	res, err := runNonInteractiveAwaitingSeal(
-		ctx, gate, "s5", rec, run,
+		ctx, gate, "s5", rec, run, nil,
 	)
 
 	require.Error(t, err)
@@ -226,7 +258,7 @@ func TestRunNonInteractiveAwaitingSealRunErrorPassthroughAfterSeal(t *testing.T)
 	}
 
 	res, err := runNonInteractiveAwaitingSeal(
-		t.Context(), gate, "s6", rec, run,
+		t.Context(), gate, "s6", rec, run, nil,
 	)
 
 	require.ErrorIs(t, err, errRun)

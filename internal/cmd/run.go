@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -369,7 +370,14 @@ var runCmd = &cobra.Command{
 		// facade no longer re-exports an internal *app.App wrapper in
 		// its public API (sdk.Wrap and sdk.Client.RunNonInteractive
 		// were removed as internal-only seams).
-		res, runErr := a.RunNonInteractiveWithResult(ctx, os.Stdout, prompt, overrides, hideSpinner, mode, sessionID, useLast)
+		// Fork patch (finalization gate): with options.finalization.enabled
+		// the terminal stdout is buffered and flushed once after the owner's
+		// finalization record seals; flag off keeps the legacy path.
+		res, runErr := runGatedNonInteractive(ctx, a.Config().Options.AgentFinalizationEnabled(),
+			a.FinalizationTerminalGate, sessionID, os.Stdout,
+			func(out io.Writer) (*app.RunResult, error) {
+				return a.RunNonInteractiveWithResult(ctx, out, prompt, overrides, hideSpinner, mode, sessionID, useLast)
+			})
 		// Fork patch: --fail-on-review maps a "fail" reviewer verdict
 		// to a dedicated exit code. Guarded by runErr == nil so a run
 		// that itself failed keeps its own error exit code, and by

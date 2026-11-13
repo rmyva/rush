@@ -62,12 +62,20 @@ func defaultRunFinalizationGate() session.FinalizationTerminalGate {
 // waiting yields a finalizationGateRefusal wrapping ctx.Err(). While the
 // owner is actively running, stream mode loses token liveness — the output
 // arrives only after the seal — which is exactly the requested behavior.
+//
+// The owner's finalization record is created DURING the run, so the owner is
+// resolved after it returns: resolveOwnerAfterRun maps the run result to the
+// owner session id (res.SessionID); a nil resolver or an empty mapping keeps
+// ownerSessionID. An empty resolved owner short-circuits the hold: no
+// record can exist for an unknown owner, so the run's own outcome is
+// returned with the buffered output flushed once.
 func runNonInteractiveAwaitingSeal(
 	ctx context.Context,
 	gate session.FinalizationTerminalGate,
 	ownerSessionID string,
 	stdout io.Writer,
 	run func(out io.Writer) (*app.RunResult, error),
+	resolveOwnerAfterRun func(*app.RunResult) string,
 ) (*app.RunResult, error) {
 	if gate == nil {
 		gate = session.DefaultFinalizationTerminalGate()
@@ -78,10 +86,25 @@ func runNonInteractiveAwaitingSeal(
 	}
 	var buf bytes.Buffer
 	res, runErr := run(&buf)
-	if err := gate.AwaitSealed(ctx, ownerSessionID); err != nil {
+	owner := ownerSessionID
+	if resolveOwnerAfterRun != nil {
+		if resolved := resolveOwnerAfterRun(res); resolved != "" {
+			owner = resolved
+		}
+	}
+	if owner == "" {
+		// Nothing identifiable to wait for: no record can exist without an
+		// owner, so fail-closed would discard output for nothing. Flush what
+		// the run printed and return the run's own outcome.
+		if _, copyErr := io.Copy(stdout, &buf); copyErr != nil && runErr == nil {
+			return res, fmt.Errorf("flush held run output: %w", copyErr)
+		}
+		return res, runErr
+	}
+	if err := gate.AwaitSealed(ctx, owner); err != nil {
 		// Fail-closed: discard the held output, do not print it.
 		return res, &finalizationGateRefusal{
-			OwnerSessionID: ownerSessionID,
+			OwnerSessionID: owner,
 			GateErr:        err,
 			RunErr:         runErr,
 		}
