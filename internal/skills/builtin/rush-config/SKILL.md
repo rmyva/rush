@@ -246,6 +246,8 @@ options: {
 
 Other options: `context_paths`, `progress`, `disable_notifications`, `disable_auto_summarize`, `disable_metrics`, `disable_provider_auto_update`, `disable_default_providers`, `data_directory`, `initialize_as`.
 
+- Agent finalization for batch agents: `options.finalization.enabled` (default false) — see `docs/agent-finalization.md`.
+
 ## User-Invocable Skills
 
 Skills can be made invocable as commands from the commands palette. Add `user-invocable: true` to the skill's YAML frontmatter:

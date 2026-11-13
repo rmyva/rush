@@ -367,7 +367,8 @@ type Options struct {
 	// BackgroundJobDefaultTimeoutSeconds is the opt-in default
 	// terminate_and_wake deadline for background bash/run_command calls that
 	// pass no explicit timeout. 0 (default) = off.
-	BackgroundJobDefaultTimeoutSeconds int `json:"background_job_default_timeout_seconds,omitempty" jsonschema:"description=Default terminate_and_wake deadline in seconds for background bash/run_command calls that pass no explicit timeout. A per-call timeout always wins. Default 0 = off (opt-in).,default=0,example=120"`
+	BackgroundJobDefaultTimeoutSeconds int                  `json:"background_job_default_timeout_seconds,omitempty" jsonschema:"description=Default terminate_and_wake deadline in seconds for background bash/run_command calls that pass no explicit timeout. A per-call timeout always wins. Default 0 = off (opt-in).,default=0,example=120"`
+	Finalization                       *FinalizationOptions `json:"finalization,omitempty" jsonschema:"description=Agent finalization (batch agents): hold the final answer until children finish\\, reaction debts settle\\, there is no cancellation and no open mutations. Default: false."`
 	// NoRealWorkspace marks a config whose session has no real host
 	// working directory (sdk.ModeLibrary with an empty Options.WorkingDir:
 	// an ephemeral, in-memory session). It is the single authoritative

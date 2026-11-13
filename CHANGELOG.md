@@ -8,6 +8,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Added the opt-in `options.finalization.enabled` config flag for agent finalization of batch agents: when enabled, a batch agent's final answer is drafted first and sealed only once its children finish, reaction debts settle, and there is no cancellation and no open mutation, so clients see "done" only after the seal. Off by default — without the flag behavior is byte-for-byte unchanged; in this sprint the flag is being wired to the runtime in stages, so it does not change behavior yet. Documented in `docs/agent-finalization.md`, schema updated.
+
 - The `rush run --help` long text is organized into labeled sections (roles and models, prompt input, session, sub-agents, output and results, limits and timeouts, hooks, worktree, permissions and MCP) with a per-section flag index; no existing description was dropped, and the per-flag usage strings are unchanged.
 
 - Added `rush sessions status <id> [--json]`: one read-only, machine-readable snapshot of a session — process liveness (from a real OS probe), phase, seconds since real activity across the sub-agent tree, live children, and whether its batch work is terminal — combining what `why`, `locks`, `last` and `watch` each show partially. The snapshot never claims more than its evidence proves: anything it cannot establish is the literal value `"unknown"`, and a recorded `ended_reason` is reported as `exit_reason` without ever being treated as proof that a process exited. Documented in `docs/sessions-status.md`.

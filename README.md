@@ -127,6 +127,8 @@ post-import activity. Preserve `rush_store_v1.db` and its sidecars; there is no
 reverse importer or merge-back. See [job-batch rollout and controls](docs/jobbatch.md)
 and [session operations](docs/session-operations.md).
 
+Agent finalization is an opt-in brake for batch runs: with `options.finalization.enabled: true` a batch agent's final answer is held as a draft until its children finish, reaction debts settle and there is no cancellation or open mutation; the default (flag absent or false) is the exact pre-feature behavior. See [agent finalization](docs/agent-finalization.md).
+
 ## Running an experimental build side by side
 
 `rush --global-dir <DIR>` (or the `RUSH_GLOBAL_DIR` environment variable; the flag wins) relocates ALL Rush-owned global state under `DIR` with a fixed layout: `DIR/config` (config, Rush-owned skills/commands), `DIR/data` (data file, OAuth journals, provider/model-catalog caches, projects.json, audit logs, heartbeat, bin) and `DIR/cache`. When set, `RUSH_GLOBAL_CONFIG`, `RUSH_GLOBAL_DATA`, `RUSH_CACHE_DIR` and `XDG_*` are ignored for Rush-owned global paths, so an experimental build never touches a production install's state. Things belonging to other tools deliberately do NOT move: `~/.claude`, `~/.agents/skills`, `agents/skills`, `~/.aws`, the GitHub Copilot CLI token file, and the legacy `crush.*` migration source paths.
