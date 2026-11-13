@@ -156,7 +156,7 @@ func (c *installedBatchModelControl) Run(ctx context.Context, inv BatchInvocatio
 		if c.rootLeases == nil {
 			return "", ErrDiskProviderUnavailable
 		}
-		if err := c.rootLeases.acquire(root, inv.Policy.DiskBindingID, inv.RegistryID); err != nil {
+		if err := c.rootLeases.acquire(root, inv.SessionID, inv.Policy.DiskBindingID, inv.RegistryID); err != nil {
 			return "", err
 		}
 		rootOwned = true
