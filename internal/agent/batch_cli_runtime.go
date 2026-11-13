@@ -64,6 +64,16 @@ func (i *BatchInstall) SubmitCLIRef(ctx context.Context, owner string, spec jobb
 	i.RunnerHandle.started[root] = batch
 	i.RunnerHandle.owners[root] = owner
 	i.RunnerHandle.mu.Unlock()
+	// Record the CLI root's owning session in the lease ledger (owner-only
+	// entry: no disk capability owner exists for CLI roots) and arm the Done
+	// watcher so a settled root's owner entry does not linger — the watcher
+	// releases the never-acquired caps key (a no-op) and forgets the entry.
+	if i.RootLeases != nil {
+		if err := i.RootLeases.acquire(root, owner, "", ""); err != nil {
+			return nil, fmt.Errorf("batch CLI: record root owner: %w", err)
+		}
+		_ = i.RootLeases.adopt(root, batch.Done(), "", "", nil)
+	}
 	return batch, nil
 }
 

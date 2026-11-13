@@ -63,16 +63,29 @@ func batchRootLeaseRoots(s *batchRootLeaseStore) map[jobbatch.ID]struct{} {
 //
 // Attribution evidence: production root-kind owners are created only via
 // batchRootLeaseStore.acquire (batch_ingress.go and batch_model_control.go
-// acquire call sites); the ledger records the root's capability identity but
-// NOT the owning session, so attribution is injected through ownerFor — the
-// only place recording root-to-owner today is the CLI submit path
-// (batch_cli_runtime.go, batchRunnerAdapter.owners). Execution-kind owners
-// cover one accepted execution until physical disposal and carry no session
-// attribution at all, so ANY live execution fails the provider closed.
-// Call/construction/continuation kinds are capability scopes, not hold
-// sources: construction pins are pinned-once app-level records that would
-// block every finalization for the process lifetime, call owners are
-// intra-invocation, and continuation is reserved and unused.
+// acquire call sites, plus the CLI submit path in batch_cli_runtime.go),
+// and acquire now records the OWNING SESSION in the ledger entry itself.
+// That ledger attribution replaced the old CLI-only runner-adapter index
+// (batchRunnerAdapter.owners): ownerForRoot is the single attribution
+// reader, so model-control and ingress roots attribute the same way CLI
+// roots always did.
+//
+// Execution over-count: an execution-kind owner carries no session
+// attribution (there is no execution-to-session index), so every live
+// execution is counted as a hold of the QUERIED owner too — a deliberate
+// conservative over-count. It is the safe side: the seal defers until the
+// physical dispose completes, then the count drops. Execution lifecycle:
+// the engine releases execution owners via the Disposer path
+// (internal/jobbatch/runner_control.go maybeDispose after terminate plus
+// giveUp plus zero pins -> batchBindingExecution.Dispose -> the once
+// release), NOT immediately at node-terminal; a dispose TIMEOUT or panic
+// intentionally retains the owner (batch_exec.go), so the hold count stays
+// elevated until the process restarts. That is truthful — physical
+// disposal did not complete — never a silent zero. Call/construction/
+// continuation kinds are capability scopes, not hold sources: construction
+// pins are pinned-once app-level records that would block every
+// finalization for the process lifetime, call owners are intra-invocation,
+// and continuation is reserved and unused.
 //
 // Window safety: after the owner binds, the S1 fence refuses new
 // reservations so batch roots only decrease, and cross-process roots stay
@@ -80,12 +93,11 @@ func batchRootLeaseRoots(s *batchRootLeaseStore) map[jobbatch.ID]struct{} {
 // facts reader.
 //
 // Locking: the function takes two separate snapshot acquisitions (caps
-// owners, ledger entries), never nests them, and never holds either lock
-// across attribution.
+// owners, ledger entries) plus one ownerForRoot read, never nests them,
+// and never holds either lock across attribution.
 func NewFinalizationBatchRootHoldsProvider(
 	leases *BatchRootLeaseStore,
 	caps *DiskProviderRegistry,
-	ownerFor func(jobbatch.ID) string,
 ) session.FinalizationHoldsProvider {
 	return func(ctx context.Context, ownerSessionID string) (int, error) {
 		if err := ctx.Err(); err != nil {
@@ -105,20 +117,17 @@ func NewFinalizationBatchRootHoldsProvider(
 			// set holds no root or execution keys at all.
 			return 0, nil
 		}
-		executions := 0
-		for _, key := range keys {
-			if key.kind == diskOwnerExecution {
-				executions++
-			}
-		}
-		if executions > 0 {
-			return 0, fmt.Errorf("%w: %d execution owner(s) hold disk providers "+
-				"with no execution-to-session index",
-				ErrFinalizationHoldsUnattributable, executions)
-		}
 		leaseRoots := batchRootLeaseRoots(leases)
 		count := 0
 		for _, key := range keys {
+			if key.kind == diskOwnerExecution {
+				// CONSERVATIVE OVER-COUNT: a live execution of ANY owner
+				// counts as a hold of the queried owner too; there is no
+				// execution-to-session index, so this is the safe side —
+				// the seal defers until physical dispose, then passes.
+				count++
+				continue
+			}
 			if key.kind != diskOwnerRoot {
 				continue
 			}
@@ -128,11 +137,11 @@ func NewFinalizationBatchRootHoldsProvider(
 					"outside the lease ledger",
 					ErrFinalizationHoldsUnattributable, root)
 			}
-			owner := ""
-			if ownerFor != nil {
-				owner = ownerFor(root)
-			}
+			owner := leases.ownerForRoot(root)
 			if owner == "" {
+				// No owning session recorded — impossible in production
+				// (acquire refuses an empty owner); the check stays as a
+				// fail-closed guard against a forgotten entry.
 				return 0, fmt.Errorf("%w: root %s has no owning session recorded",
 					ErrFinalizationHoldsUnattributable, root)
 			}
@@ -146,84 +155,51 @@ func NewFinalizationBatchRootHoldsProvider(
 
 // NewFinalizationBatchRootHoldsProviderForInstall wires the provider to one
 // installed batch runtime: live holds come from install.DiskBindings and
-// install.RootLeases, attribution from the runner adapter's in-process
-// root-to-owner index. All fields are nil-guarded: a nil install or a
-// dormant install (nil registries) fails closed at call time, never panics.
+// attribution from install.RootLeases — the lease ledger the install's
+// acquire call sites record owners into. RunnerHandle and any ownerFor
+// delegate are no longer consulted. All fields are nil-guarded: a nil
+// install or a dormant install (nil registries) fails closed at call time,
+// never panics.
 func NewFinalizationBatchRootHoldsProviderForInstall(install *BatchInstall) session.FinalizationHoldsProvider {
-	var ownerFor func(jobbatch.ID) string
-	if install != nil && install.RunnerHandle != nil {
-		ownerFor = install.RunnerHandle.ownerFor
-	}
 	var leases *BatchRootLeaseStore
 	var caps *DiskProviderRegistry
 	if install != nil {
 		leases, caps = install.RootLeases, install.DiskBindings
 	}
-	return NewFinalizationBatchRootHoldsProvider(leases, caps, ownerFor)
+	return NewFinalizationBatchRootHoldsProvider(leases, caps)
 }
 
 // NewFinalizationTrackedProcessHoldsProvider counts the tracked process
-// trees owned by one session. It returns a session.FinalizationHoldsProvider.
+// trees as a PROCESS-level conservative over-approximation: the pid-keyed
+// registries in package session (trackedJobs on Windows, trackedGroups
+// elsewhere) carry no owning session, and the cliprovider spawn sites have
+// no session index, so ANY live tracked tree defers every owner's seal
+// until physical teardown, then the count returns to baseline. It returns
+// a session.FinalizationHoldsProvider.
 //
-// Attribution evidence: the tracked-process registries (trackedJobs on
-// Windows, trackedGroups on Unix, both in package session) are
-// package-level pid-keyed maps with NO owning session; the cliprovider
-// registration sites (procgroup_windows.go and procgroup_unix.go) do not
-// know the owning session either. Package agent cannot read package
-// session's unexported state, so any count returned today would be
-// session-blind and would mix every session's holds — the provider fails
-// closed instead.
-//
-// W1 note: record the owning session at the cliprovider spawn sites into a
-// session-keyed registry — a NEW file in package session, e.g. a
-// map[sessionID]pids maintained by a session-aware wrapper around
-// TrackProcessTree/RegisterSpawnedGroup plus an exported reader — then wire
-// this constructor to that reader.
+// No-self-deadlock guarantee for the owner's own current CLI stream, with
+// code evidence: the spawn sites are
+// internal/agent/cliprovider/provider_stream.go:424 (PTY) and :626 (pipe);
+// unregistration is provider_stream.go:663 session.UntrackProcessTree
+// (childPid) inside visibleCleanup, deferred in the stream generator at
+// :697, so it runs when the stream generator returns — before the turn
+// pipeline observes stream completion. TrySeal only runs when a candidate
+// is recorded (internal/session/finalization_seal.go refuses
+// AgentFinalizationSealNoCandidate otherwise), and the candidate is
+// persisted only after the provider step fully consumed the stream
+// (internal/agent/agent_turn_step.go persistFinalizationCandidate ~:827).
+// During wait no stream runs; during compose the seal follows that compose
+// turn's own completed stream. Therefore the owner's own current CLI
+// stream is always unregistered by seal time — no permanent self-block.
 func NewFinalizationTrackedProcessHoldsProvider() session.FinalizationHoldsProvider {
 	return func(ctx context.Context, ownerSessionID string) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return 0, fmt.Errorf("count finalization tracked process holds: %w", err)
 		}
 		if ownerSessionID == "" {
+			// Empty owner deterministically means zero owned holds.
 			return 0, nil
 		}
-		return 0, fmt.Errorf("%w: tracked process trees are pid-keyed in "+
-			"package session with no owning-session attribution",
-			ErrFinalizationHoldsUnattributable)
-	}
-}
-
-// NewFinalizationHostLockHoldsProvider counts the host locks owned by one
-// session. It returns a session.FinalizationHoldsProvider.
-//
-// Attribution evidence: the hold is the exclusive OS file lock on
-// <dataDir>/hosts/<host_id>.lock (host_lock.go); locks belong to hosts, not
-// sessions. The only session-to-host index is the durable session_drivers
-// marker (session_driver.go), whose liveness verdict requires an OS file
-// probe no database row attests. Counting this process's own host lock
-// would deadlock every finalization, because the owner's driver holds its
-// own lock and marker while TrySeal runs. The provider seam carries no
-// database handle by design — the composite must not read the database — so
-// the provider fails closed today.
-//
-// W1 note: either extend this constructor with a driver-probe delegate that
-// reads the owner's marker row through TrySeal's own transaction (inline SQL
-// on session_drivers — the sanctioned pattern for lane files) plus the
-// non-blocking shared probe session.ProbeHostShared, excluding this
-// process's own host ids via session.IsOwnHostID with unknown probe
-// outcomes failing closed; or build a new package-session provider on
-// HostStore with the same own-host exclusion.
-func NewFinalizationHostLockHoldsProvider() session.FinalizationHoldsProvider {
-	return func(ctx context.Context, ownerSessionID string) (int, error) {
-		if err := ctx.Err(); err != nil {
-			return 0, fmt.Errorf("count finalization host lock holds: %w", err)
-		}
-		if ownerSessionID == "" {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("%w: host locks belong to hosts, not sessions, "+
-			"and no session-to-host index with a non-blocking liveness probe "+
-			"is reachable from this seam",
-			ErrFinalizationHoldsUnattributable)
+		return session.CountFinalizationTrackedProcessHolds(), nil
 	}
 }

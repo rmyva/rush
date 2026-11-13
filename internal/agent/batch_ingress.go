@@ -237,7 +237,7 @@ func (r *batchRuntime) submit(ctx context.Context, inv BatchInvocation, spec job
 			}
 			return "", ErrDiskProviderUnavailable
 		}
-		if err := r.cfg.RootLeases.acquire(root, inv.Policy.DiskBindingID, inv.RegistryID); err != nil {
+		if err := r.cfg.RootLeases.acquire(root, inv.SessionID, inv.Policy.DiskBindingID, inv.RegistryID); err != nil {
 			if pctHandoff != nil {
 				pctHandoff.pctRelease()
 			}
