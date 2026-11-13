@@ -37,9 +37,10 @@ type apiEventsHandler struct {
 	log     *APIEventLog
 	limiter *apiSSELimiter
 	ticker  apiSSETickerFactory
+	gate    session.FinalizationTerminalGate
 }
 
-func newAPIEventsHandler(store apiEventsSessionStore, log *APIEventLog, limiter *apiSSELimiter, ticker apiSSETickerFactory) http.HandlerFunc {
+func newAPIEventsHandler(store apiEventsSessionStore, log *APIEventLog, limiter *apiSSELimiter, ticker apiSSETickerFactory, gates ...session.FinalizationTerminalGate) http.HandlerFunc {
 	if limiter == nil {
 		limiter = &apiSSELimiter{counts: make(map[string]int)}
 	}
@@ -47,6 +48,14 @@ func newAPIEventsHandler(store apiEventsSessionStore, log *APIEventLog, limiter 
 		ticker = func() apiSSETicker { return apiRealSSETicker{ticker: time.NewTicker(15 * time.Second)} }
 	}
 	h := apiEventsHandler{store: store, log: log, limiter: limiter, ticker: ticker}
+	// Fork patch (finalization): an explicit gate (test seam) wins;
+	// otherwise the production store derives it from its app, nil with the
+	// flag off.
+	if len(gates) > 0 {
+		h.gate = gates[0]
+	} else if ws, ok := store.(apiAppWriteStore); ok {
+		h.gate = finalizationTerminalGateFor(ws.app)
+	}
 	return h.serveHTTP
 }
 
@@ -75,6 +84,11 @@ func (h apiEventsHandler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	defer h.limiter.release(principal.TokenID)
 	ch, overflow, unsubscribe := h.log.Subscribe(item.ID)
 	defer unsubscribe()
+	// Fork patch (finalization): nil gate (flag off) returns ch unchanged;
+	// a held terminal "run" event waits for the owner's seal. NOTE: the
+	// Last-Event-ID replay below bypasses this gate (known gap, out of
+	// scope).
+	ch = FinalizationGatedAPIEventStream(r.Context(), h.gate, item.ID, ch)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -111,6 +125,7 @@ func (h apiEventsHandler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	replayed := last
 	ticker := h.ticker()
 	defer ticker.Stop()
 	revoked := apiSSERevocation(r.Context(), principal)
@@ -132,13 +147,15 @@ func (h apiEventsHandler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 				_ = flush()
 				return
 			}
-			if event.ID <= last {
+			// Live events dedupe only against the replay boundary: a held
+			// terminal event legitimately arrives after higher event ids,
+			// so a running high-water mark would drop it forever.
+			if event.ID <= replayed {
 				continue
 			}
 			if err := apiSSEWrite(w, event); err != nil {
 				return
 			}
-			last = event.ID
 			if err := flush(); err != nil {
 				return
 			}

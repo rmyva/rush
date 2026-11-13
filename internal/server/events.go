@@ -53,10 +53,15 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) eventForw
 	// exits with ctx.
 	liveWork := startLiveWorkPusher(ctx, a, h)
 
+	// Fork patch (finalization): nil gate (flag off) leaves both forwarders
+	// unchanged; a held terminal event waits for the seal. WS and web
+	// clients inherit the holds through the hub.
+	gate := finalizationTerminalGateFor(a)
+
 	// Sessions
 	go func() {
 		defer forwarders.Done()
-		ch := a.Sessions.Subscribe(ctx)
+		ch := FinalizationGatedSessionStream(ctx, gate, a.Sessions.Subscribe(ctx))
 		for {
 			select {
 			case ev, ok := <-ch:
@@ -84,7 +89,7 @@ func subscribeAndBroadcast(ctx context.Context, a *appPkg.App, h *Hub) eventForw
 	// Messages ΓÇö batch streaming updates to avoid flooding the client.
 	go func() {
 		defer forwarders.Done()
-		ch := a.Messages.Subscribe(ctx)
+		ch := FinalizationGatedMessageStream(ctx, gate, a.Messages.Subscribe(ctx))
 		ticker := time.NewTicker(batchInterval)
 		defer ticker.Stop()
 

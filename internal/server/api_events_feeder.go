@@ -35,12 +35,15 @@ func startAPIEventFeeder(app *appPkg.App, log *APIEventLog, registry *APIRunRegi
 			<-ctx.Done()
 			return
 		}
+		// Fork patch (finalization): nil gate (flag off) leaves both feeds
+		// byte-for-byte unchanged; a held terminal event waits for the seal.
+		gate := finalizationTerminalGateFor(app)
 		var wg sync.WaitGroup
 		if app.Messages != nil {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for event := range app.Messages.Subscribe(ctx) {
+				for event := range FinalizationGatedMessageStream(ctx, gate, app.Messages.Subscribe(ctx)) {
 					if event.Type == pubsub.CreatedEvent || event.Type == pubsub.UpdatedEvent {
 						log.Publish(event.Payload.SessionID, "message", apiMessageFromModel(event.Payload))
 					}
@@ -51,7 +54,7 @@ func startAPIEventFeeder(app *appPkg.App, log *APIEventLog, registry *APIRunRegi
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for event := range app.Sessions.Subscribe(ctx) {
+				for event := range FinalizationGatedSessionStream(ctx, gate, app.Sessions.Subscribe(ctx)) {
 					switch event.Type {
 					case pubsub.CreatedEvent, pubsub.UpdatedEvent:
 						log.Publish(event.Payload.ID, "session", apiSessionFromModel(event.Payload))
