@@ -29,6 +29,7 @@ contributed evidence; `notes` explains every read that failed or degraded.
 | `waiting`       | A live sub-agent delegation is keeping the session open.                  |
 | `idle`          | Nothing is known to be happening and no end is recorded.                  |
 | `finished`      | The session row records an `ended_reason` and nothing is live.            |
+| `paused`        | The session row records `ended_reason` `peak_hours` (a provider peak-hours pause) and nothing is live. |
 | `crashed`       | A real dead-PID or dead-host probe result — never inferred.               |
 | `unknown`       | The shared activity read failed; see `notes`.                             |
 
@@ -37,6 +38,11 @@ base five phases (`turn`, `between_turns`, `waiting`, `idle`,
 `finished`): it is only ever set from a real dead-PID or dead-host
 probe, so a script can assert on it without re-deriving a crash from
 absence of evidence.
+
+`paused` is issued only for an `ended_reason` of `peak_hours`; it renders
+textually as "paused: provider peak hours". No resume time is derivable
+from the session facts (an open wake marker would have kept the session
+live in `between_turns`, not `ended`), so none is printed.
 
 ## JSON reference (`--json`)
 
@@ -54,7 +60,7 @@ absence of evidence.
 | `children.held_questions`    | int \| null         | Pending child-question notices; null when the notice read failed.           |
 | `batch.terminal`             | bool \| `"unknown"` | An incomplete batch read is the string, never proof of completion.          |
 | `batch.roots[]`              | array               | `root_id`, `state` (cancelling/disappeared included), `held`.               |
-| `exit_reason`                | string              | The recorded `ended_reason`; omitted when none.                             |
+| `exit_reason`                | string              | The recorded `ended_reason`, rendered verbatim; the text output adds a human label for known reasons ("paused: provider peak hours" for `peak_hours`); unknown reasons are never turned into `done`. Omitted when none. |
 | `sources`                    | array               | Snapshots that contributed evidence, fixed order.                           |
 | `notes`                      | array               | Degraded/failed reads; omitted when none.                                   |
 
@@ -65,6 +71,20 @@ absence of evidence.
   end evidence.
 - An absent or released session lock does not mean the process exited; it
   means there is nothing to probe.
+
+## Ended reason rendering
+
+- `peak_hours` renders as the `paused` phase and the label
+  "paused: provider peak hours" — a pause, never a completion.
+- The known vocabulary (`end_turn`, `stop`, `tool_use`, `max_tokens`,
+  `max_cost`, `canceled`, `error`, `unknown`, `queued`, `awaiting_answer`,
+  `stalled`, `timeout`, `done`, `batch_fault`) renders as `done` (the
+  historical whole-column behavior).
+- Any other reason — one a newer rush wrote that this binary does not
+  know — renders verbatim, never as `done`.
+- A live status with a recorded `ended_reason` is annotated
+  "(exit <reason>)" in `sessions list` and `sessions why` instead of
+  hiding the recorded end.
 
 ## Examples
 

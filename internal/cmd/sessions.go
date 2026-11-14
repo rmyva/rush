@@ -48,6 +48,7 @@ func init() {
 	sessionsLocksCmd.Flags().Bool("json", false, "Emit NDJSON (one JSON object per line)")
 	sessionsLocksCmd.Flags().Bool("stale-only", false, "Filter to locks older than 10 minutes or for dead processes")
 	sessionsLocksCmd.Flags().Bool("prune", false, "Remove lock files proven (via a real OS-level lock probe) to have no live holder. Off by default: `sessions locks` is read-only unless this is set.")
+	sessionsLocksCmd.Flags().Bool("all", false, "Include idle lock files (no holder PID recorded, offline pulse, no live-driver evidence) that the default view collapses into a one-line summary")
 
 	sessionsTailCmd.Flags().Bool("follow", false, "Keep polling for new messages until session finishes")
 	sessionsTailCmd.Flags().String("from-message", "", "Resume from this message ID (skip earlier)")

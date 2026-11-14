@@ -61,6 +61,15 @@ func (l *cliLoop) todoNudgeDue() bool {
 	if errors.As(l.runErr, &asked) {
 		return false
 	}
+	// A peak-hours pause must not fire a reminder turn: the same refusal
+	// would kill it and surface as a "todo reminder turn failed" error.
+	// The reminder is skipped with a stderr note; the todos stay for the
+	// resumed run.
+	var peak *agent.PeakHoursError
+	if errors.As(l.runErr, &peak) {
+		fmt.Fprintf(l.errOut(), "rush run: session %q: todo reminder skipped — the provider is in its peak-hours window (%v); the todos stay for the resumed run\n", l.sessionID, peak)
+		return false
+	}
 	n, fp, err := l.openTodos()
 	if err != nil || n == 0 {
 		return false
@@ -121,7 +130,7 @@ func (l *cliLoop) nudgePhase() cliStepResult {
 		return cliStepResult{ev: evNudgeAgain}
 	}
 	if done, exitErr := l.afterDrain(result, err, buffered, usageBefore); done {
-		final, exitFinal := l.exit(exitErr, "error")
+		final, exitFinal := l.exit(exitErr, incompleteExitReason(exitErr))
 		return cliStepResult{ev: evNudgeEnded, final: final, err: exitFinal}
 	}
 	return cliStepResult{ev: evNudgeAgain}

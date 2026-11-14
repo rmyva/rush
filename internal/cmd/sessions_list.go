@@ -65,10 +65,16 @@ rush sessions list --json | jq 'select(.message_count > 0)'
 
 		// One classifier for the whole list (R-ACT): every STATUS comes from
 		// App.SessionActivityBatch -- the same verdicts `sessions why` prints --
-		// with no per-session promotion layers. The Kind -> STATUS mapping:
-		// in turn / between turns -> "running" (live work), delegating ->
-		// "delegating", crashed -> "crashed", ended -> "done", idle -> blank
-		// (at rest). In-process knowledge (the coordinator's parked-delegation
+		// with no per-session promotion layers. The verdict renders through
+		// the one shared STATUS label (sessionStatusLabel,
+		// sessions_status_label.go): in turn / between turns -> "running"
+		// (live work), delegating -> "delegating", crashed -> "crashed"; an
+		// ended session renders from its recorded ended_reason -- "done" for
+		// the known vocabulary, "paused: provider peak hours" for
+		// peak_hours, anything unknown verbatim (never "done"); idle ->
+		// blank (at rest). A live status with a recorded ended_reason is
+		// annotated "(exit <reason>)" so list surfaces the same exit fact
+		// `sessions status` reports. In-process knowledge (the coordinator's parked-delegation
 		// registry) is deliberately not consulted: a parked delegation keeps
 		// its own live batch root, so another process sees the same
 		// verdict (decision 9).
@@ -201,7 +207,7 @@ func listStatusesWithAwaiting(ctx context.Context, store pendingChildQuestionRea
 			v = session.ClassifySessionActivity(f)
 			awaitingByID[id] = qs[0]
 		}
-		st := listStatus(v)
+		st := sessionStatusLabel(v, act.Facts.EndedReason)
 		if _, ok := questionsByRoot[id]; ok && st != "" {
 			st += " (awaiting answer)"
 		}
@@ -221,20 +227,13 @@ func idsOf(sessions []session.Session) []string {
 }
 
 // listStatus maps the classifier's verdict to the STATUS-column vocabulary
-// ("running" / "delegating" / "crashed" / "done"; "" = at rest). One mapping
-// for every cmd consumer, so the commands cannot drift apart.
+// ("running" / "delegating" / "crashed" / "done"; "" = at rest) through the
+// one shared label this file, `sessions why` and `sessions status` render
+// from. The verdict-only shape carries no recorded end: callers holding the
+// facts call sessionStatusLabel directly, so a live session's recorded exit
+// is annotated instead of hidden (FIX-STATUS (a)).
 func listStatus(v session.ActivityVerdict) string {
-	switch v.Kind {
-	case session.ActivityInTurn, session.ActivityBetweenTurns:
-		return "running"
-	case session.ActivityDelegating:
-		return "delegating"
-	case session.ActivityCrashed:
-		return "crashed"
-	case session.ActivityEnded:
-		return "done"
-	}
-	return ""
+	return sessionStatusLabel(v, "")
 }
 
 func statusOrDash(s string) string {
@@ -269,7 +268,10 @@ type sessionListItem struct {
 	EndedReason string `json:"ended_reason,omitempty"`
 	// Status is "running" (live work: in a turn or between turns),
 	// "delegating" (a live sub-agent delegation), "crashed" (a crash fact,
-	// no live work), "done" (a recorded ended_reason) or absent (at rest).
+	// no live work), "done" (a recorded ended_reason; "paused: provider
+	// peak hours" for ended_reason peak_hours; an unknown ended_reason
+	// renders verbatim) or absent (at rest). A live status with a recorded
+	// ended_reason is annotated "(exit <reason>)" instead of hiding it.
 	// Classified by the one session-activity classifier; omitempty keeps
 	// the wire shape minimal for at-rest sessions.
 	Status string `json:"status,omitempty"`
