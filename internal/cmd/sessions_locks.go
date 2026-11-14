@@ -32,6 +32,19 @@ offline. Fresher message or sub-agent activity can update the displayed
 pulse age, and shared activity can relabel a live between-turn wait. Mtime
 age is not run duration and by itself does not prove that a process died.
 
+Idle lock files — a lock that records no holder PID, whose pulse reads
+offline, and which no live-driver evidence overturned (exactly the state a
+clean Release leaves behind) — are collapsed by the default view into a
+one-line summary such as:
+
+  3 idle lock files (no holder, no PID) hidden — use --all to list
+
+Pass --all to list them anyway. Passing an explicit session id shows that
+session's lock even when it is idle. With --json, the NDJSON stream ends
+with a final summary line {"summary":{"total":N,"shown":M,"hidden_idle":K}}
+(hidden_idle is 0 with --all); --stale-only still filters on top of the
+collapse.
+
 A session lock is held only during a turn. A live "rush run" may release
 it while waiting between turns on a job, delegation or retry; shared
 session-activity and batch/host evidence can label that row "between turns"
@@ -61,6 +74,9 @@ rush sessions locks pr-42
 
 # Show only stale locks
 rush sessions locks --stale-only
+
+# Include idle lock files the default view collapses
+rush sessions locks --all
 
 # Stream to jq for scripting
 rush sessions locks --json | jq '.session_id'
@@ -206,10 +222,33 @@ var lockEntryInfo = func(entry os.DirEntry) (os.FileInfo, error) {
 	return entry.Info()
 }
 
+// locksJSONSummary closes the --json NDJSON stream: machine consumers get
+// the collapse count even when the array part is filtered.
+type locksJSONSummary struct {
+	Total      int `json:"total"`       // entries considered after the session-id filter (shown + hidden idle)
+	Shown      int `json:"shown"`       // rows listed above the summary line
+	HiddenIdle int `json:"hidden_idle"` // idle lock files collapsed by the default view; 0 with --all
+}
+
+// locksJSONEnvelope is the final --json line.
+type locksJSONEnvelope struct {
+	Summary locksJSONSummary `json:"summary"`
+}
+
+// lockIsIdle reports whether a classified lock entry is a settled
+// no-holder leftover: no PID recorded (neither file content nor sidecar),
+// an offline pulse no live evidence overturned, not between turns, not
+// stalled. This is exactly what a clean Release leaves behind — harmless,
+// but noise at listing time.
+func lockIsIdle(pid int, stale, betweenTurns, stalled bool) bool {
+	return pid <= 0 && stale && !betweenTurns && !stalled
+}
+
 func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	staleOnly, _ := cmd.Flags().GetBool("stale-only")
 	prune, _ := cmd.Flags().GetBool("prune")
+	showAll, _ := cmd.Flags().GetBool("all")
 
 	a, err := setupApp(cmd)
 	if err != nil {
@@ -234,7 +273,8 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			if asJSON {
-				return nil
+				enc := json.NewEncoder(os.Stdout)
+				return enc.Encode(locksJSONEnvelope{Summary: locksJSONSummary{}})
 			}
 			fmt.Println("(no locks)")
 			return nil
@@ -313,6 +353,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	var locks []lockItem
+	idleHidden := 0
 	now := time.Now()
 	const autoDeleteAfter = 60 * time.Second
 
@@ -334,6 +375,10 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		age := now.Sub(info.ModTime())
 
 		lockPath := filepath.Join(locksDir, entry.Name())
+		// removeFailed marks a provably-dead lock whose removal failed: its
+		// file now has a wiped PID and fresh mtime, so it must never be
+		// collapsed into the idle summary.
+		removeFailed := false
 
 		// Auto-delete candidate: mtime older than 1 minute AND the operator
 		// explicitly opted in via --prune. By default `sessions locks` is
@@ -412,6 +457,7 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 					// (>20s), so the entry is correctly shown as stale/offline
 					// rather than silently dropped from the listing while its
 					// stale file lingers on disk.
+					removeFailed = true
 					fmt.Fprintf(os.Stderr, "warning: could not remove provably-dead lock %s: %v\n", entry.Name(), err)
 				}
 			}
@@ -486,6 +532,14 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 		// Phase 0 stall marker (sessions_stall.go): stale heartbeat, live PID.
 		stalled := !betweenTurns && pulseSec >= int64(stallPulseThreshold/time.Second) && pid > 0
 
+		// Default view: collapse settled no-holder leftovers into the summary
+		// line (Part of the FIX-LOCKS change). An explicit session argument
+		// bypasses the collapse: the operator asked for that exact lock.
+		if !removeFailed && lockIsIdle(pid, stale, betweenTurns, stalled) && !showAll && onlyStem == "" {
+			idleHidden++
+			continue
+		}
+
 		if staleOnly && !stale {
 			continue
 		}
@@ -522,12 +576,24 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 				return err
 			}
 		}
-		return nil
+		return enc.Encode(locksJSONEnvelope{Summary: locksJSONSummary{
+			Total:      len(locks) + idleHidden,
+			Shown:      len(locks),
+			HiddenIdle: idleHidden,
+		}})
 	}
 
 	if len(locks) == 0 {
 		if len(args) == 1 {
 			fmt.Printf("(no lock file for session %s)\n", args[0])
+			return nil
+		}
+		if idleHidden > 0 {
+			unit := "files"
+			if idleHidden == 1 {
+				unit = "file"
+			}
+			fmt.Printf("%d idle lock %s (no holder, no PID) hidden — use --all to list\n", idleHidden, unit)
 			return nil
 		}
 		if staleOnly {
@@ -572,7 +638,17 @@ func sessionsLocksCmdRun(cmd *cobra.Command, args []string) error {
 			subAgent,
 		)
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if idleHidden > 0 {
+		unit := "files"
+		if idleHidden == 1 {
+			unit = "file"
+		}
+		fmt.Printf("%d idle lock %s (no holder, no PID) hidden — use --all to list\n", idleHidden, unit)
+	}
+	return nil
 }
 
 // verdictPulse relabels a lock's mtime pulse from a live verdict (R-ACT: the
