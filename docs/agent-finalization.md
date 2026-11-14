@@ -34,6 +34,30 @@ remain valid accepted messages; the legacy path ignores leftover bookkeeping.
 
 ## Status
 
-Status: behind the flag, off by default. In this sprint the switch is being
-wired to the implementation in stages, so the flag alone does not change
-behavior yet; this page documents the contract the switch stands for.
+Behind the flag, off by default. With the flag on, a root run binds a durable
+finalization record, the end of its turn waits (polling durable facts every two
+seconds) until its children have finished, its reaction debts are settled and
+nothing is open, and only then seals; `rush run` buffers its output and the
+HTTP API and WebSocket hold terminal events until the seal. With the flag off
+nothing in this document applies and the runtime is unchanged.
+
+### Known limitations (do not enable by default yet)
+
+- **No model turn on recomposition.** The recomposition re-marks the provisional
+  answer without a provider request and the reaction debts are settled by
+  marking, so the child's result does not reach the model in that run: the
+  sealed text stays the provisional one. The result is not lost (the completion
+  stays pullable and the session's next turn shows it), but the ordinary
+  `rush run` loop, which already waits for the child and runs one more model
+  turn with its result, produces a better final answer than the flag-on path.
+  A real compose turn is the next piece of work.
+- **Cancel during the wait.** A run cancelled while it waits marks its record
+  cancelled; the batch commit admission then refuses the terminal commits of the
+  owner's still-live children, so their roots stay non-terminal until the
+  process exits or the host is recovered, and the shutdown drain reports a
+  fault.
+- **Queued and replacement calls** inside one run do not pass through the root
+  bind (they run the legacy path); `InterruptAndSend` during the wait leaves the
+  record active until the next root run of the session retires it.
+- **App-level `RunResult`** is not gated separately; the turn blocks until the
+  seal, so the result is produced after it.
