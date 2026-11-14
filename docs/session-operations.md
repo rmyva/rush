@@ -43,6 +43,14 @@ There are two child-agent question paths; use the matching one:
 
 Startup and periodic maintenance perform bounded dead-host recovery. Only a host proven dead is recovered: live work in retained CLI roots is interrupted and its controls are closed; unannounced non-CLI reservations may be deleted, while CLI roots are retained. This recovery records interrupted work; it does not replay or automatically resubmit it. A new execution requires a new, explicit submission. The scan is bounded and can continue on a later pass, so inspect current batch state rather than interpreting one pass or a missing read as successful completion. This is distinct from the one-time database import/upgrade procedure, where the documented requeued imported work can repeat external side effects.
 
+## Session audit
+
+`rush sessions audit` inspects session stores for suspicion patterns (repeated file views, repeated commands, wait-only loops, repeated tool errors, notices) and is read-only: it never writes to the database and creates nothing in the data directory.
+
+`--since 24h` is a window over message timestamps: it narrows both which messages the rules count and which sessions `--all` scans. A session whose every message is older than the window is not scanned and not printed, so the session table, the findings and the summary all describe the same window.
+
+Every report ends with the same total line — `scanned N sessions: M with findings, K clean` — and a clean scan additionally prints `no anomalies`. The `--json` output carries a `summary` object (`scanned`, `with_findings`, `clean`) per scanned database; it is present even for the notice-only report a missing store file produces.
+
 ## The two compaction boundaries
 
 Model-context compaction summarizes an existing session's conversation history; SQLite `VACUUM` reclaims free database pages. They are different operations. With no session argument, `rush sessions compact` retains its database-only `VACUUM` behavior. Database `--dry-run` can checkpoint the WAL, so it is not side-effect-free.

@@ -118,11 +118,32 @@ const (
 	auditPartToolResult = "tool_result"
 )
 
-// auditScanMessages reads the selected sessions' messages with one query and
-// folds every row into tally, in the order the session produced them
-// (created_at, then rowid, which is what an append-only log looks like after
-// an edit re-wrote a row's timestamp).
+// auditQueryChunk caps the IN (...) list of one statement. SQLite's variable
+// limit is build-dependent (999 on old builds, 32766 on current ones), and a
+// --all over thousands of sessions must not bet on either; 900 sits below the
+// smallest of them.
+const auditQueryChunk = 900
+
+// auditScanMessages reads the selected sessions' messages and folds every row
+// into tally, in chunks of auditQueryChunk ids per statement. The rows' order
+// is deliberately irrelevant: every rule is a pure per-session counter, so
+// the query carries no ORDER BY and never pays a temp-B-tree sort of the
+// whole result.
 func auditScanMessages(ctx context.Context, db *sql.DB, schema auditSchema, ids []string, since time.Duration, tally *auditTally) error {
+	for start := 0; start < len(ids); start += auditQueryChunk {
+		end := start + auditQueryChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		if err := auditScanMessageChunk(ctx, db, schema, ids[start:end], since, tally); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// auditScanMessageChunk scans one IN-chunk of sessions' messages.
+func auditScanMessageChunk(ctx context.Context, db *sql.DB, schema auditSchema, ids []string, since time.Duration, tally *auditTally) error {
 	query, params := auditMessagesQuery(schema, ids, since)
 	rows, err := db.QueryContext(ctx, query, params...)
 	if err != nil {
@@ -173,7 +194,9 @@ func auditMessagesQuery(schema auditSchema, ids []string, since time.Duration) (
 		query += " AND created_at >= ?"
 		params = append(params, time.Now().Add(-since).Unix())
 	}
-	return query + " ORDER BY created_at, rowid", params
+	// No ORDER BY: the rules are order-independent counters, and a scan of a
+	// large database must not pay a temp-B-tree sort of its whole result.
+	return query, params
 }
 
 // applyMessage folds one message row into the tally. A message whose parts

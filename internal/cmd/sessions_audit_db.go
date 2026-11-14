@@ -107,7 +107,7 @@ func auditDataDir(ctx context.Context, dataDir string, args []string, all bool, 
 	}
 	report.Health = &health
 
-	rows, notices, err := auditSelectSessions(ctx, db, args, all)
+	rows, notices, err := auditSelectSessions(ctx, db, args, all, since)
 	if err != nil {
 		return report, err
 	}
@@ -136,6 +136,7 @@ func auditDataDir(ctx context.Context, dataDir string, args []string, all bool, 
 	if len(findings) > 0 {
 		report.Findings = findings
 	}
+	report.Summary = auditReportSummary(rows, findings)
 	return report, nil
 }
 
@@ -271,14 +272,15 @@ func auditCollectHealth(ctx context.Context, db *sql.DB, dbPath string) (auditDB
 
 // auditSelectSessions resolves the selection (all, an exact id, or a prefix)
 // into session rows. Ambiguity is a notice, never a guess.
-func auditSelectSessions(ctx context.Context, db *sql.DB, args []string, all bool) ([]auditSessionRow, []string, error) {
+func auditSelectSessions(ctx context.Context, db *sql.DB, args []string, all bool, since time.Duration) ([]auditSessionRow, []string, error) {
 	const query = `SELECT id, title, created_at, updated_at, message_count FROM sessions`
 
 	var notices []string
 	var selection []auditSessionRow
 	var err error
 	if all {
-		selection, err = auditQuerySessions(ctx, db, query+" ORDER BY updated_at DESC", nil)
+		selection, err = auditQuerySessions(ctx, db,
+			query+auditRecentSessionsFilter(since)+" ORDER BY updated_at DESC", auditSinceParams(since))
 	} else {
 		id := args[0]
 		// An exact id or a prefix: a single match is unambiguous, more than
@@ -311,6 +313,26 @@ func auditSelectSessions(ctx context.Context, db *sql.DB, args []string, all boo
 		notices = append(notices, fmt.Sprintf("no session matches %q", id))
 	}
 	return selection, notices, nil
+}
+
+// auditRecentSessionsFilter limits --all's selection to sessions that have at
+// least one message inside the --since window, so the session list and the
+// findings describe the same window. Without a window every session is
+// scanned, exactly as before.
+func auditRecentSessionsFilter(since time.Duration) string {
+	if since <= 0 {
+		return ""
+	}
+	return " WHERE EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.id AND m.created_at >= ?)"
+}
+
+// auditSinceParams binds the window's start timestamp in Unix seconds, the
+// unit every created_at column stores; nil without a window.
+func auditSinceParams(since time.Duration) []any {
+	if since <= 0 {
+		return nil
+	}
+	return []any{time.Now().Add(-since).Unix()}
 }
 
 // auditQuerySessions runs one session-selecting query and scans the rows.

@@ -23,30 +23,53 @@ import (
 
 // reviewVerdictPattern matches the verdict line the reviewer prompt demands
 // as the review's first line: "VERDICT: PASS", "VERDICT: PASS_WITH_NOTES" or
-// "VERDICT: FAIL". (?m) lets it sit anywhere in the report instead of only on
-// line 1, ^\W* tolerates a markdown marker in front of the keyword
-// ("**VERDICT: FAIL**"), and the alternation order is deliberate:
-// PASS_WITH_NOTES MUST come first, or PASS would swallow the prefix and a
-// "PASS_WITH_NOTES" review would be recorded as a bare "pass".
-var reviewVerdictPattern = regexp.MustCompile(`(?m)^\W*VERDICT:\s*(PASS_WITH_NOTES|PASS|FAIL)\b`)
+// "VERDICT: FAIL". Real reviewer output ships that line in other shapes the
+// strict pattern recorded as "unparsed" (the 2026-11-13 fix-audit: a Russian
+// first line "ПРОВЕРКА: ПРОЙДЕНО С ЗАМЕЧАНИЯМИ"), so the pattern accepts:
+//   - (?i): the keyword's case is format noise; "verdict: pass" and
+//     "Verdict: Fail" mean what they say.
+//   - ВЕРДИКТ / ПРОВЕРКА: the same line with the label word in Russian —
+//     the labels the reviewer prompt itself names ("Зачёт", "Зачёт с
+//     замечаниями", "Отказ") are matched in their Russian spelling too.
+//   - The prefix [^\p{L}\p{N}_\r\n]* tolerates markdown markers in front of
+//     the keyword ("**VERDICT: FAIL**", "## Verdict: PASS") on the SAME
+//     line. It must not be \W*: Go's \W is ASCII-only, so it would also
+//     swallow Cyrillic letters and newlines and let a quoted "VERDICT: PASS"
+//     deep in a Russian review override the real first-line verdict.
+//   - The trailing (?:$|[^\p{L}0-9_]) is the Unicode-safe end-of-token
+//     anchor. Go's regexp \b is ASCII-only, so a word boundary after a
+//     Cyrillic token never fires; the explicit class keeps "PASSED" and
+//     "ЗАЧЁТЫ" from parsing as the shorter tokens they contain.
+//
+// The alternation order is deliberate: the longer tokens MUST come first,
+// or PASS would swallow the prefix of PASS_WITH_NOTES and ПРОЙДЕНО the
+// prefix of ПРОЙДЕНО С ЗАМЕЧАНИЯМИ. The FIRST match still wins, so a review
+// that repeats a token in its body (quoting the prompt's rules, say) cannot
+// change what the run recorded.
+var reviewVerdictPattern = regexp.MustCompile(`(?mi)^[^\p{L}\p{N}_\r\n]*(?:VERDICT|ВЕРДИКТ|ПРОВЕРКА)\s*:\s*(PASS_WITH_NOTES|ПРОЙДЕНО С ЗАМЕЧАНИЯМИ|ЗАЧЁТ С ЗАМЕЧАНИЯМИ|ЗАЧЕТ С ЗАМЕЧАНИЯМИ|PASS|ПРОЙДЕНО|ЗАЧЁТ|ЗАЧЕТ|FAIL|ОТКАЗ|ПРОВАЛ)(?:$|[^\p{L}0-9_])`)
 
 // parseReviewVerdict returns the review's verdict as the lowercase wire value
 // RunResult.ReviewVerdict carries: "pass", "pass_with_notes" or "fail". The
-// FIRST match wins, so a review that repeats the token in its body (quoting
-// the prompt's rules, say) cannot change what the run recorded. "" when the
-// text carries no verdict line at all — the caller records "unparsed".
+// FIRST match wins, so a review that repeats the token in its body cannot
+// change what the run recorded. The captured token is upper-cased before the
+// switch because (?i) folds its case ("pass" and "зачёт" must not fall into
+// fail). "" when the text carries no verdict line at all — the caller records
+// "unparsed"; an unknown captured token also records "unparsed" instead of
+// inventing a verdict.
 func parseReviewVerdict(text string) string {
 	m := reviewVerdictPattern.FindStringSubmatch(text)
 	if m == nil {
 		return ""
 	}
-	switch m[1] {
-	case "PASS_WITH_NOTES":
+	switch strings.ToUpper(m[1]) {
+	case "PASS_WITH_NOTES", "ПРОЙДЕНО С ЗАМЕЧАНИЯМИ", "ЗАЧЁТ С ЗАМЕЧАНИЯМИ", "ЗАЧЕТ С ЗАМЕЧАНИЯМИ":
 		return "pass_with_notes"
-	case "PASS":
+	case "PASS", "ПРОЙДЕНО", "ЗАЧЁТ", "ЗАЧЕТ":
 		return "pass"
-	default:
+	case "FAIL", "ОТКАЗ", "ПРОВАЛ":
 		return "fail"
+	default:
+		return ""
 	}
 }
 

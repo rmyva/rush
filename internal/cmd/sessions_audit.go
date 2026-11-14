@@ -80,7 +80,8 @@ and exits 0 — audit creates nothing, migrates nothing and fixes nothing.
 Flags:
   --all          audit every session in the database
   --since <d>    only messages newer than a Go duration (30m, 24h), a day
-                 suffix (7d), or a bare integer read as days
+                 suffix (7d), or a bare integer read as days; with --all,
+                 sessions with no message inside the window are not scanned
   --worktrees    also scan the databases of the linked worktrees: every
                  other checkout Rush has registered keeps its own
                  .rush store (see "rush projects", read-only)
@@ -90,6 +91,11 @@ Flags:
 
 Selection: pass a full session id, or a prefix of one. A prefix matching
 more than one session is refused — re-run with the full id.
+
+The scan always ends with one honest total: "scanned N sessions: M with
+findings, K clean", plus an explicit "no anomalies" line when M is zero —
+output that stops after the session table is a clean scan, not a truncated
+one. --json carries the same total as a "summary" object per database.
 
 Rules and thresholds:
   the same file viewed again and again                >= 3 times
@@ -130,7 +136,7 @@ rush sessions audit 7f3a91c2
 
 func init() {
 	sessionsAuditCmd.Flags().Bool("all", false, "Audit every session in the database (otherwise pass a session id or a prefix of one)")
-	sessionsAuditCmd.Flags().String("since", "", "Only analyse messages newer than this: Go duration (30m, 24h), day suffix (7d), or a bare integer read as days")
+	sessionsAuditCmd.Flags().String("since", "", "Only analyse messages newer than this: Go duration (30m, 24h), day suffix (7d), or a bare integer read as days; with --all, sessions with no message in the window are not scanned")
 	sessionsAuditCmd.Flags().Bool("worktrees", false, "Scan linked worktrees' databases (read-only)")
 	sessionsAuditCmd.Flags().Bool("json", false, "Emit one JSON object per scanned database instead of text")
 }
