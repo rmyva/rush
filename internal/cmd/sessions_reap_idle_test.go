@@ -175,8 +175,12 @@ func TestReapLockIdentityLost_Unit(t *testing.T) {
 
 	require.False(t, reapLockIdentityLost(baseline, path), "same inode is not lost")
 
-	require.NoError(t, os.Remove(path))
-	require.True(t, reapLockIdentityLost(baseline, path), "stat on a removed path fails closed: lost")
+	// Move the baseline aside instead of removing it: a freed inode number is
+	// reused immediately on Linux filesystems, so a plain remove-and-recreate
+	// can hand the replacement the same inode and os.SameFile would call it
+	// the same file. While the old file stays linked its inode cannot be reused.
+	require.NoError(t, os.Rename(path, path+".old"))
+	require.True(t, reapLockIdentityLost(baseline, path), "stat on a missing path fails closed: lost")
 	require.NoError(t, os.WriteFile(path, []byte("b\n"), 0o644))
 	require.True(t, reapLockIdentityLost(baseline, path), "recreated path is a new inode: lost")
 }

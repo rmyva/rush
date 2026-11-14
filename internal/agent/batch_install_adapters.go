@@ -279,7 +279,8 @@ func (d *batchStoreDoneSource) AwaitDone(ctx context.Context, owner string, root
 		if _, err := b.Wait(ctx); err != nil {
 			return fantasy.ToolResponse{}, false, err
 		}
-		return d.LoadDone(ctx, owner, root)
+		resp, ok, err := d.LoadDone(ctx, owner, root)
+		return resp, ok, callerCancelOr(ctx, err)
 	}
 	tick := time.NewTicker(d.pollInterval())
 	defer tick.Stop()
@@ -289,7 +290,7 @@ func (d *batchStoreDoneSource) AwaitDone(ctx context.Context, owner string, root
 		}
 		resp, ok, err := d.LoadDone(ctx, owner, root)
 		if err != nil || ok {
-			return resp, ok, err
+			return resp, ok, callerCancelOr(ctx, err)
 		}
 		select {
 		case <-ctx.Done():
