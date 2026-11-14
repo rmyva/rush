@@ -290,7 +290,7 @@ func (d *batchStoreDoneSource) AwaitDone(ctx context.Context, owner string, root
 		// phases, then read once; no busy poll under the gate.
 		e, ok, err := session.FinalizationAwaitGatedBatchResult(ctx, d.finalizationGate, owner, string(root), d.readEnvelope)
 		if err != nil || !ok {
-			return fantasy.ToolResponse{}, ok, err
+			return fantasy.ToolResponse{}, ok, callerCancelOr(ctx, err)
 		}
 		resp, convErr := d.envelopeResult(e)
 		if convErr != nil {
