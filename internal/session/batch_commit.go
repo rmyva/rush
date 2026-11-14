@@ -34,6 +34,14 @@ type BatchCommitIdentity struct {
 	// root's owner from the row (RootOwner).
 	OwnerFor func(spec jobbatch.Spec) string
 
+	// AuthorityFor resolves the runner-wide finalization authority for one
+	// owner at commit time (the process registry the composition root
+	// installs). The commit hook runs on runner goroutines without the
+	// submitting call's context, so a per-run authority is reachable only
+	// through this lookup. Nil keeps the exact legacy behavior: an owner
+	// with a bound scope but no static authority stays refused.
+	AuthorityFor func(owner string) *AgentFinalizationAuthority
+
 	// AdmitOwners runs after durable tickets and before batch writer I/O. Its
 	// error-returning release is attempted after success or failure.
 	AdmitOwners func(context.Context, jobbatch.Transition, []string) (func() error, error)

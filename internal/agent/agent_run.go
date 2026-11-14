@@ -48,7 +48,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	// Finalization driver start (W1a): bind the scope, build the per-call
 	// execution, recover a persisted candidate and register cancellation.
 	// A nil wiring (flag off) is the no-op pass-through below.
-	execCtx, unregisterFinalization, finalizationErr := a.finalizationWiring().startExecution(ctx, call)
+	execCtx, call, unregisterFinalization, finalizationErr := a.startExecution(ctx, call)
 	if finalizationErr != nil {
 		return nil, notAttempted(call, fmt.Errorf("session %q: finalization driver start failed: %w", call.SessionID, finalizationErr))
 	}

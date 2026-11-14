@@ -42,6 +42,9 @@ func (app *App) installAgentFinalizationWiring() error {
 		NoticeStore: noticeStore,
 		DataDir:     app.dataDir,
 		Install:     app.batchInstall,
+		// W1c: the same registry the batch install put into the commit
+		// identity; the root bind registers each bound authority here.
+		Authorities: app.finalizationAuthorityRegistry(),
 		ResultGate:  app.FinalizationTerminalGate(),
 	})
 }

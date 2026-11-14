@@ -80,6 +80,12 @@ func admitBatchCommitOwners(store *BatchStore, ctx context.Context, id BatchComm
 	}()
 	for _, owner := range owners {
 		authority := authorities[owner]
+		if authority == nil && id.AuthorityFor != nil {
+			authority = id.AuthorityFor(owner)
+			if authority != nil && (authority.service != service || authority.service.db != service.db || !authority.identity.valid()) {
+				return finalizationTicketRelease(ctx, service, tickets), nil, errors.New("batch commit admission: conflicting authority binding")
+			}
+		}
 		if authority == nil {
 			exists, err := service.hasFinalizationScope(ctx, owner)
 			if err != nil {

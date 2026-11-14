@@ -116,6 +116,12 @@ type App struct {
 	batchRuntime *BatchRuntime
 	batchInstall *agent.BatchInstall
 
+	// finalizationAuthorities is the W1c owner-to-authority registry built
+	// once when the finalization flag is on: the batch commit identity and
+	// the agent finalization wiring share this one instance. Nil when the
+	// flag is off (nothing allocates).
+	finalizationAuthorities *agent.FinalizationAuthorityRegistry
+
 	// ephemeralDiskBindings is the capability registry for an ephemeral
 	// library-mode App (dataDir == ""): such an App never installs the
 	// batch runtime whose DiskBindings normally serve custom-DiskProvider

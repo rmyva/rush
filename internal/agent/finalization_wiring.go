@@ -21,6 +21,12 @@ type FinalizationWiringDeps struct {
 	NoticeStore *session.SessionNoticeStore
 	DataDir     string
 	Install     *BatchInstall
+	// Authorities is the process-wide owner-to-authority registry the
+	// composition root builds once when the flag is on and also hands to
+	// the batch commit identity; the root bind registers the bound
+	// authority here so runner-side commits can admit without a call
+	// context. Optional for direct assembly, required by the root bind.
+	Authorities *FinalizationAuthorityRegistry
 	ResultGate  session.FinalizationTerminalGate
 }
 
@@ -44,6 +50,7 @@ type finalizationWiring struct {
 	debtFacts   session.FinalizationReactionDebtFacts
 	settler     session.AgentFinalizationDebtSettler
 	cancel      *finalizationCancelRegistry
+	authorities *FinalizationAuthorityRegistry
 	poll        time.Duration
 	hooks       FinalizationDriverHooks
 }
@@ -96,7 +103,11 @@ func newFinalizationWiring(deps FinalizationWiringDeps, coord *coordinator) (*fi
 		debtFacts:   ds,
 		settler:     ds,
 		cancel:      newFinalizationCancelRegistry(),
-		poll:        defaultSupervisionInterval(),
+		authorities: deps.Authorities,
+		// The wait loop re-reads durable facts at this cadence; changes made by
+		// the batch runner never signal the in-process gate. The 5-minute
+		// supervision window is far too coarse for a parent waiting on a child.
+		poll: defaultFinalizationPollInterval,
 	}
 	w.hooks = FinalizationDriverHooks{
 		BindScope:    w.bindScopeHook(),

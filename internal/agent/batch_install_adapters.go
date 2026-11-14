@@ -616,8 +616,14 @@ type BatchInstallDeps struct {
 	// PsvBatchSupervisionArmingLate over the late-bound coordinator. Nil
 	// (older wiring, tests) arms nothing.
 	ArmSupervision func(context.Context, string)
-	Sessions       session.Service
-	DiskBindings   *DiskProviderRegistry
+	// FinalizationAuthorityFor is the process-wide owner-to-authority
+	// lookup the composition root installs when the finalization flag is
+	// on; it lets the commit hook admit batch commits for the bound owner
+	// without the submitting call's context. Nil keeps the exact legacy
+	// behavior.
+	FinalizationAuthorityFor func(string) *session.AgentFinalizationAuthority
+	Sessions                 session.Service
+	DiskBindings             *DiskProviderRegistry
 }
 
 // pwCompletionWakeHook wraps a durable batch commit hook with the ordinary
@@ -851,6 +857,7 @@ func newBatchInstall(_ context.Context, deps BatchInstallDeps, withRunner bool) 
 	// session (OwnerFor); the fixed Owner stays the dormant default.
 	commitIdentity := session.BatchCommitIdentity{
 		Host: deps.Host, Runner: deps.RunnerID, Owner: owner, OwnerFor: batchCommitOwnerFor,
+		AuthorityFor: deps.FinalizationAuthorityFor,
 	}
 	if authorityService, ok := deps.Sessions.(session.AgentFinalizationService); ok {
 		commitIdentity, err = authorityService.WithAgentFinalizationAuthorities(commitIdentity)

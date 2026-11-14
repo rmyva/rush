@@ -33,8 +33,12 @@ import (
 // absent flag block means the feature is off (FinalizationOptions.Enabled
 // is a pointer so absent stays distinguishable from explicit false — and
 // both mean off). Returns the app and the session id.
-func newFinalizationE2EApp(t *testing.T, handler http.HandlerFunc, finalizationEnabled bool) (*App, string) {
+func newFinalizationE2EApp(t *testing.T, handler http.HandlerFunc, finalizationEnabled bool, options ...finalizationE2EOption) (*App, string) {
 	t.Helper()
+	var cfg finalizationE2EConfig
+	for _, option := range options {
+		option(&cfg)
+	}
 
 	// Both GlobalConfig() and GlobalConfigData() resolution paths must be
 	// isolated separately (see the golden envelope test's identical block).
@@ -48,6 +52,12 @@ func newFinalizationE2EApp(t *testing.T, handler http.HandlerFunc, finalizationE
 	t.Setenv("RUSH_PROVIDER_CACHE_ONLY", "1")
 
 	dataDir := t.TempDir()
+	if cfg.leakyDataDir {
+		leaky, err := os.MkdirTemp("", "rush-fin-e2e-*")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = os.RemoveAll(leaky) }) // Best effort: see finalizationE2ELeakyDataDir.
+		dataDir = leaky
+	}
 	trace := newAdmissionTrace()
 	srv := httptest.NewServer(trace.wrap(handler))
 	t.Cleanup(srv.Close)
@@ -114,4 +124,23 @@ func newFinalizationE2EApp(t *testing.T, handler http.HandlerFunc, finalizationE
 	// Registered last, so it runs before application.Shutdown on cleanup.
 	logAdmissionAppOnFailure(t, application, store, sess.ID, trace)
 	return application, sess.ID
+}
+
+// finalizationE2EConfig carries the optional harness switches.
+type finalizationE2EConfig struct {
+	leakyDataDir bool
+}
+
+// finalizationE2EOption adjusts one harness build.
+type finalizationE2EOption func(*finalizationE2EConfig)
+
+// finalizationE2ELeakyDataDir keeps the data directory outside t.TempDir and
+// removes it best effort. A run cancelled while it waits on a live child
+// leaves that child's root non-terminal (the owner's record is no longer
+// active, so the batch commit admission refuses its terminal commit), the
+// shutdown drain then reports a fault and retains the host lock file until
+// the process exits, which on Windows makes a strict TempDir removal fail
+// even though nothing is wrong with the scenario.
+func finalizationE2ELeakyDataDir() finalizationE2EOption {
+	return func(cfg *finalizationE2EConfig) { cfg.leakyDataDir = true }
 }

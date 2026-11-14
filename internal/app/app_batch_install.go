@@ -65,6 +65,12 @@ func (app *App) installBatchRuntime(ctx context.Context) error {
 		Host: host, RunnerID: uuid.NewString(),
 		DiskBindings: agent.NewDiskProviderRegistry(),
 	}
+	// W1c: the flag-on registry must exist before the batch install so the
+	// commit-hook identity carries the same lookup the finalization wiring
+	// registers authorities into. Flag off: nil, byte-identical install.
+	if registry := app.finalizationAuthorityRegistry(); registry != nil {
+		deps.FinalizationAuthorityFor = registry.Lookup
+	}
 	if batchInstallDepsHook != nil {
 		batchInstallDepsHook(&deps)
 	}
