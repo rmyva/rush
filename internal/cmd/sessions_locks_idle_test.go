@@ -82,16 +82,15 @@ func TestSessionsLocks_IdleFilesCollapsedByDefault(t *testing.T) {
 	locksIdleSetup(t, dataDir)
 	locksDir := locksIdleFixture(t, dataDir)
 
-	var stdout string
-	stdout = captureStdout(t, func() {
+	stdout := captureStdout(t, func() {
 		require.NoError(t, sessionsLocksCmd.RunE(sessionsLocksCmd, nil))
 	})
 
 	require.Contains(t, stdout, "999999", "crash-trace lock must stay visible")
 	require.Contains(t, stdout, "3 idle lock files (no holder, no PID) hidden — use --all to list")
-	assert.NotContains(t, stdout, "session-idle-a")
-	assert.NotContains(t, stdout, "session-idle-b")
-	assert.NotContains(t, stdout, "session-idle-c")
+	assert.NotContains(t, stdout, "idle-a")
+	assert.NotContains(t, stdout, "idle-b")
+	assert.NotContains(t, stdout, "idle-c")
 
 	// Read-only command: the idle files must still be on disk.
 	for _, id := range []string{"idle-a", "idle-b", "idle-c"} {
