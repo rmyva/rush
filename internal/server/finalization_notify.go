@@ -65,7 +65,7 @@ func FinalizationGatedStream[T any](
 		releases := make(chan finalizationRelease, finalizationNotifyReleaseBuffer)
 		closed := false
 		ctxDone := ctx.Done()
-		var inCh <-chan T = in
+		inCh := in
 		for !closed || len(waiting) > 0 {
 			select {
 			case ev, ok := <-inCh:

@@ -50,7 +50,7 @@ func TestFinalizationOnCancelHookRefusesSealBeforePublication(t *testing.T) {
 	require.Zero(t, published, "a cancelled owner must not deliver anything")
 	_, err = env.execution.gate.beginCandidate(env.ctx, env.execution.read)
 	require.ErrorIs(t, err, context.Canceled, "no later stamp can be taken, so no later seal is possible")
-	verdict, err = env.execution.gate.trySeal(env.ctx, stamp, candidate, env.execution.read, publish)
+	_, err = env.execution.gate.trySeal(env.ctx, stamp, candidate, env.execution.read, publish)
 	require.ErrorIs(t, err, context.Canceled)
 	require.Zero(t, published)
 	record, err := env.scope.store.Snapshot(env.ctx, env.scope.identity)

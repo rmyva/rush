@@ -151,6 +151,7 @@ func TestFinalizationDriverHooksPartialSetIsRefused(t *testing.T) {
 		"no OnCancel":     func(h *FinalizationDriverHooks) { h.OnCancel = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			hooks := finalizationSeamHooks()
 			drop(&hooks)
 			require.False(t, hooks.IsZero())

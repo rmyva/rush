@@ -19,7 +19,7 @@ type finalizationWiringTestCoordinator struct {
 // gate allocation.
 func TestAppFinalizationWiringInstallFlagOffIsNoop(t *testing.T) {
 	// A config-less App is a no-op regardless of the coordinator.
-	var nilConfigApp *App = &App{AgentCoordinator: finalizationWiringTestCoordinator{}}
+	nilConfigApp := &App{AgentCoordinator: finalizationWiringTestCoordinator{}}
 	require.NoError(t, nilConfigApp.installAgentFinalizationWiring())
 	_, ok := nilConfigApp.AgentCoordinator.(finalizationWiringTestCoordinator)
 	require.True(t, ok, "the coordinator value stays untouched")

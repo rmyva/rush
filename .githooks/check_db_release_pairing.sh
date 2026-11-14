@@ -132,6 +132,7 @@ while IFS= read -r file; do
 	internal/app/app_run_workspace_test.go|\
 	internal/app/app_new_skip_agent_setup_test.go|\
 	internal/app/app_run_admission_race_test.go|\
+	internal/app/app_finalization_e2e_harness_test.go|\
 	internal/app/app_run_json_envelope_golden_test.go|\
 	internal/app/app_run_lockbusy_firstturn_test.go|\
 	internal/app/app_wake_schedule_wiring_test.go|\
