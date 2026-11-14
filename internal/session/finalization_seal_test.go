@@ -169,12 +169,12 @@ func TestTrySealIdempotentRepeatIsDeterministic(t *testing.T) {
 	require.False(t, repeat.Sealed)
 	require.Equal(t, AgentFinalizationSealNone, repeat.Reason)
 	require.Equal(t, first.Record, repeat.Record)
-	require.Equal(t, first.Message, repeat.Message)
+	requireSameSealedMessage(t, first.Message, repeat.Message)
 	again, err := NewAgentFinalizationStore(e.conn).TrySeal(t.Context(), e.id, presented, probe, reader)
 	require.NoError(t, err)
 	require.True(t, again.Accepted)
 	require.Equal(t, first.Record, again.Record)
-	require.Equal(t, first.Message, again.Message)
+	requireSameSealedMessage(t, first.Message, again.Message)
 	require.EqualValues(t, 1, probe.updates.Load(), "no second accepted-receipt write")
 	require.EqualValues(t, 1, probe.publications.Load(), "no second terminal event")
 	record, err := e.store.Snapshot(t.Context(), e.id)
@@ -505,4 +505,14 @@ func TestTrySealRequiresWriterCapability(t *testing.T) {
 	require.ErrorIs(t, err, ErrAgentFinalizationChanged)
 	require.Equal(t, AgentFinalizationSealOutcome{}, outcome)
 	require.Equal(t, before, sealStateDump(t, e.conn))
+}
+
+// requireSameSealedMessage compares two views of the sealed message ignoring
+// UpdatedAt: the seal outcome carries the accepted row as it was built before
+// UpdateTx stamped its own `time.Now().Unix()` on a copy, so a repeat read from
+// the store differs by one second whenever the seal crosses a second boundary.
+func requireSameSealedMessage(t *testing.T, want, got message.Message) {
+	t.Helper()
+	want.UpdatedAt, got.UpdatedAt = 0, 0
+	require.Equal(t, want, got)
 }
