@@ -54,10 +54,12 @@ reason or an absent lock. The "crashed" phase is deliberately part of
 this command's vocabulary beyond the base five phases (turn,
 between_turns, waiting, idle, finished): it is only ever set from a
 real dead-PID or dead-host probe, so a script can assert on it without
-re-deriving a crash from absence of evidence.
+re-deriving a crash from absence of evidence. Peak hours (an ended_reason
+of peak_hours) renders as the paused phase, and an unknown ended_reason
+stays the finished phase with its verbatim reason in exit_reason.
 
-Phases: turn | between_turns | waiting | idle | finished | crashed |
-unknown.`,
+Phases: turn | between_turns | waiting | idle | finished | paused |
+crashed | unknown.`,
 	Args: cobra.ExactArgs(1),
 	Example: `
 # One snapshot of a session's process, phase, children and batch work
@@ -185,7 +187,7 @@ func sessionsStatusSnapshot(ctx context.Context, a *app.App, dataDir, sessionID 
 	} else {
 		facts = act.Facts
 		lockRead = true
-		rep.Phase = sessionsStatusPhase(act.Verdict.Kind)
+		rep.Phase = sessionsStatusPhase(act.Verdict)
 		rep.Process = sessionsStatusProcessBlock(facts, &notes)
 	}
 
@@ -334,13 +336,16 @@ func sessionsStatusSources(f sessionStatusSourceFlags) []string {
 	return out
 }
 
-// sessionsStatusPhase maps the shared classifier's verdict kinds onto the
+// sessionsStatusPhase maps the shared classifier's verdict onto the
 // command's phase vocabulary. "crashed" is kept deliberately: the
 // classifier only produces it from a real dead-PID or dead-host probe, and
 // a script should not have to re-derive a crash from absence of evidence.
-// An unrecognized kind (a future verdict) maps to "unknown".
-func sessionsStatusPhase(kind session.ActivityKind) string {
-	switch kind {
+// "paused" is issued ONLY for the ended_reason peak_hours; "finished"
+// stays for every other recorded reason, including ones this binary does
+// not know (the reason is visible verbatim in exit_reason). An
+// unrecognized kind (a future verdict) maps to "unknown".
+func sessionsStatusPhase(v session.ActivityVerdict) string {
+	switch v.Kind {
 	case session.ActivityInTurn:
 		return "turn"
 	case session.ActivityBetweenTurns:
@@ -348,6 +353,9 @@ func sessionsStatusPhase(kind session.ActivityKind) string {
 	case session.ActivityDelegating:
 		return "waiting"
 	case session.ActivityEnded:
+		if v.EndedReason == endedReasonPeakHours {
+			return "paused"
+		}
 		return "finished"
 	case session.ActivityIdle:
 		return "idle"
@@ -550,7 +558,11 @@ func renderSessionsStatusReport(w io.Writer, rep sessionStatusReport) {
 	}
 	fmt.Fprintln(w)
 	if rep.ExitReason != "" {
-		fmt.Fprintf(w, "exit reason: %s\n", rep.ExitReason)
+		if label := endedStatusLabel(rep.ExitReason); label != rep.ExitReason {
+			fmt.Fprintf(w, "exit reason: %s (%s)\n", rep.ExitReason, label)
+		} else {
+			fmt.Fprintf(w, "exit reason: %s\n", rep.ExitReason)
+		}
 	} else {
 		fmt.Fprintln(w, "exit reason: (none)")
 	}
