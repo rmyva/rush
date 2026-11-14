@@ -187,11 +187,17 @@ func TestFinalizationWaitLoopChildActiveWakesOnChangeAndSeals(t *testing.T) {
 	})
 	go func() {
 		<-enteredWait
-		f.facts.set(func(x *finalizationFacts) { x.descendants = 0 })
+		// Bump the gate revision BEFORE the facts go quiet. The reverse order
+		// is racy: the 2ms poll can sample the quiet facts, recompose, and
+		// only then see the bump land between the new stamp and its seal,
+		// which stales that stamp and recomposes a second time. With the bump
+		// first, the facts are quiet only after the revision reached its
+		// final value, so exactly one recomposition remains.
 		release, err := f.env.execution.gate.admitMutation(false)
 		if err == nil {
 			release()
 		}
+		f.facts.set(func(x *finalizationFacts) { x.descendants = 0 })
 	}()
 	require.NoError(t, hook(t.Context(), f.ts))
 	recordAccepted(t, f)

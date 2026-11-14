@@ -746,6 +746,14 @@ func (a *sessionAgent) runTurn(ctx context.Context, call SessionAgentCall, lk *s
 		}
 	}
 
+	// Finalization (W1a): the turn's terminal outcome is held inside the
+	// L5 wait/compose/seal loop until the owner's candidate is sealed; a
+	// turn without a finalization execution (queue drain, replacement)
+	// passes through unchanged. AwaitingAnswerError propagates as-is.
+	if finErr := a.finalizationWiring().finalizeTurn(genCtx, ts); finErr != nil {
+		return nil, SessionAgentCall{}, false, &ErrCallAlreadyAttempted{Err: finErr}
+	}
+
 	// Wait for the title BEFORE cancelling, so a title that is merely slower
 	// than the turn still lands while the turn is still on the stack — that
 	// is what #525 was about. Bounded by titleJoinGrace, and a no-op when

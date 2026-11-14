@@ -838,6 +838,14 @@ func (c *coordinator) startDetachedRun(ctx context.Context, call SessionAgentCal
 		return fmt.Errorf("failed to serialize call data for durable enqueue: %w", err)
 	}
 
+	// Finalization OnCancel (L6) fires only on this durable-handoff path,
+	// strictly before the enqueue: the interrupted owner's in-process gate
+	// must stop waiting before the continuation is handed to the pump. The
+	// InterruptAndSend in-process branch and stopTree do NOT call it: they
+	// are covered by ctx cancellation of the live generation plus the
+	// durable fencing (cancel_requested and SealTx refusals).
+	c.finalizationOnCancel(call.SessionID)
+
 	// Durably enqueue the call BEFORE returning control (P0-2 requirement)
 	// This ensures the call will eventually be executed even if this goroutine exits
 	if enqueueErr := enqueueFinalizationCall(ctx, c.sessions, idempotencyKey, call, callDataJSON); enqueueErr != nil {

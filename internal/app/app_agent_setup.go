@@ -242,5 +242,11 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 	// it, so an embedded/API run's diagnostics go to that run's stderr
 	// instead of the process stderr, and non-CLI runs get none. The former
 	// app-wide SetRateLimitNotify(os.Stderr/cliLoopStderr) callback is gone.
+	// W1a: bind the finalization driver wiring when the flag is on; a nil
+	// wiring below keeps every production path byte-identical to legacy.
+	if err := app.installAgentFinalizationWiring(); err != nil {
+		slog.Error("Failed to install agent finalization wiring", "err", err)
+		return err
+	}
 	return nil
 }

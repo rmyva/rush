@@ -45,6 +45,15 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		return nil, authorityErr
 	}
 	ctx = restoredCtx
+	// Finalization driver start (W1a): bind the scope, build the per-call
+	// execution, recover a persisted candidate and register cancellation.
+	// A nil wiring (flag off) is the no-op pass-through below.
+	execCtx, unregisterFinalization, finalizationErr := a.finalizationWiring().startExecution(ctx, call)
+	if finalizationErr != nil {
+		return nil, notAttempted(call, fmt.Errorf("session %q: finalization driver start failed: %w", call.SessionID, finalizationErr))
+	}
+	ctx = execCtx
+	defer unregisterFinalization()
 	// R7-1: capture the DIRECT caller's admission recorder, then detach it
 	// for everything downstream. A queued admission is only this Run
 	// invocation's own outcome; a nested Run reached through this turn's

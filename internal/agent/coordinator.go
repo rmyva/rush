@@ -355,6 +355,10 @@ type coordinator struct {
 	credentialedRootsMu sync.Mutex
 	credentialedRoots   map[string]struct{}
 
+	// finalization is the flag-gated finalization wiring (W1a). Nil keeps the
+	// legacy behavior byte-identical: every consumer nil-checks it first.
+	finalization *finalizationWiring
+
 	currentAgent SessionAgent
 	agents       map[string]SessionAgent
 
