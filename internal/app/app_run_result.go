@@ -32,6 +32,10 @@ type RunResult struct {
 	//       json.Valid; orchestrators that pipe final_text into jq
 	//       SHOULD branch on this instead of treating exit_reason=stop
 	//       as proof the content is valid JSON.
+	//   "peak_hours" (fork-only)                            — provider
+	//       peak-hours refusal (docs/peak-hours.md §6): a deliberate,
+	//       resumable pause, not a crash; the exit code stays non-zero
+	//       and final_text names the window and the RESUME AT time.
 	ExitReason string `json:"exit_reason"`
 	FinalText  string `json:"final_text"`
 	// Review carries the automatic reviewer pass's verdict when one ran
@@ -258,6 +262,25 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 		reason = "awaiting_answer"
 		isAwaitingAnswer = true
 	}
+	// Fork patch (peak-hours pause, 2026-11-13): a peak-hours refusal is a
+	// deliberate, resumable stop — same rationale as the awaiting_answer
+	// carve-out above. exit_reason "peak_hours" replaces the generic
+	// "error" so orchestrators schedule a resume instead of treating the
+	// run as broken. Policy is unchanged: the call is still refused, the
+	// exit stays non-zero, --allow-peak-hours stays the only bypass. Only
+	// a bare/generic reason is overridden: an explicit canceled or a
+	// model-level finish keeps its own classification.
+	var peakErr *agent.PeakHoursError
+	if errors.As(err, &peakErr) && (reason == "" || reason == "error") {
+		reason = "peak_hours"
+		// The refusal is the run's outcome and there is no model answer
+		// to show: leave a non-empty final_text naming the window and the
+		// resume time, instead of an empty string that reads as silent
+		// progress loss.
+		if strings.TrimSpace(finalText) == "" {
+			finalText = peakPauseFinalText(sessionID, peakErr)
+		}
+	}
 	calls := make([]ToolCallStat, 0, len(toolCounts))
 	for name, count := range toolCounts {
 		calls = append(calls, ToolCallStat{Name: name, Count: count})
@@ -362,8 +385,7 @@ func buildRunResult(sessionID, finalText, assistantNotes, finalReason string, er
 	// continue".
 	// Peak-hours refusal (pre-flight or mid-turn stop): the envelope must
 	// carry the same guidance as stderr/DB, incl. the operator's message.
-	var peakErr *agent.PeakHoursError
-	if errors.As(err, &peakErr) {
+	if peakErr != nil {
 		if guidance := agent.PeakHoursGuidance(peakErr); !strings.Contains(errMsg, guidance) {
 			if errMsg != "" {
 				errMsg += "\n\n"
@@ -490,4 +512,33 @@ func synthesiseEmptyFinalSummary(toolCounts map[string]int) string {
 		return ""
 	}
 	return "Tools used: " + strings.Join(parts, ", ") + "."
+}
+
+// peakPauseFinalText renders the non-empty final_text of a peak-hours
+// refusal: the refused window, the exact RESUME AT time and the resume
+// command, so an orchestrator reading only final_text sees a deliberate
+// pause rather than an empty answer. Error stays the authoritative,
+// matchable refusal text ("is in peak hours ("); this is the readable
+// echo of it.
+func peakPauseFinalText(sessionID string, pe *agent.PeakHoursError) string {
+	var b strings.Builder
+	if pe.Start != "" || pe.End != "" {
+		fmt.Fprintf(&b, "Paused: provider %s refused this turn — peak hours %s–%s", pe.ProviderID, pe.Start, pe.End)
+	} else {
+		fmt.Fprintf(&b, "Paused: provider %s refused this turn — its peak-hours window is active", pe.ProviderID)
+	}
+	if pe.ReopensAt.IsZero() {
+		b.WriteString(", with no scheduled reopen (blocked around the clock)")
+	} else {
+		fmt.Fprintf(&b, "; RESUME AT: %s (local time, RFC3339: %s)",
+			pe.ReopensAt.Format("2006-01-02 15:04"), pe.ReopensAt.Format(time.RFC3339))
+	}
+	b.WriteString(". Completed work and pending notifications are preserved.")
+	if sessionID != "" {
+		fmt.Fprintf(&b, " Resume with `rush run --session %s` at or after the reopen time", sessionID)
+	} else {
+		b.WriteString(" Resume with `rush run --session <session id>` at or after the reopen time")
+	}
+	b.WriteString("; --allow-peak-hours only if a human operator explicitly asked for this run.")
+	return b.String()
 }

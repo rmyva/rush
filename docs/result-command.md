@@ -58,7 +58,7 @@ to disk.
 | Field | Meaning |
 | --- | --- |
 | `session_id` | session the run executed in |
-| `exit_reason` | why the run ended (`stop`, `end_turn`, `error`, `timeout`, `canceled`, `stalled`, `invalid_json`, `awaiting_answer`, `queued`, `max_tokens`, `provider_limit`, ...) |
+| `exit_reason` | why the run ended (`stop`, `end_turn`, `error`, `timeout`, `canceled`, `stalled`, `invalid_json`, `awaiting_answer`, `queued`, `max_tokens`, `provider_limit`, `peak_hours` (peak-hours pause, resumable), ...) |
 | `final_text` | the run's final answer text |
 | `review` | the automatic reviewer's review text (omitted when absent) |
 | `review_verdict` | reviewer verdict: `pass`, `pass_with_notes`, `fail`, `unverified`, `unparsed` or `error`; empty when no reviewer pass ran |

@@ -194,6 +194,19 @@ window boundary or a pause.
   the existing config store's hot reload — no restart needed.
 - There are **no paid retry loops**: a peak-hours refusal ends the attempt
   instead of silently re-dialling a blocked provider.
+- A refusal that ends a `rush run` reports exit_reason **`peak_hours`** in
+  the `--json` envelope (not the generic `error`), with a non-empty
+  `final_text` naming the window and the exact `RESUME AT:` time, and sets
+  the session's `ended_reason` to `peak_hours` (read by `rush sessions
+  status` / `why`). The process exit code stays non-zero and the stable
+  `is in peak hours (` marker stays in `.error`, so existing matchers keep
+  working.
+- Nothing is cleaned up on this path: no terminal assistant message is
+  expected for a refused turn (so no "authoritative terminal message
+  reconciliation failed" warning is emitted), the unfinished-todos
+  reminder turn is skipped with a stderr note instead of failing, and
+  completed work, pending notifications and the reaction debt stay
+  untouched for the resumed run.
 
 ## 7. Web UI
 

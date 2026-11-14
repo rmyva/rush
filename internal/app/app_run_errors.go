@@ -173,6 +173,17 @@ func runFailed(finalReason string, runErr error, isCanceled bool) bool {
 	}
 }
 
+// isPeakHoursStop reports that the run's error is a peak-hours refusal: a
+// deliberate, resumable stop (docs/peak-hours.md §6) where no terminal
+// assistant message was expected and an optional reminder turn must not
+// fire. errors.As-based so every wrap shape (DrainNotAttemptedError,
+// ErrCallAlreadyAttempted, "failed to start agent processing stream: %w")
+// keeps it identifiable.
+func isPeakHoursStop(err error) bool {
+	var peak *agent.PeakHoursError
+	return errors.As(err, &peak)
+}
+
 // sessionBusyGuidance turns a "session already in use" failure into the
 // sentence an operator can act on: who holds it, why a second `rush run`
 // cannot attach, and the inject command that can.

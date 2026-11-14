@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,7 +32,8 @@ func TestRunAgentTurnRecovered_PeakHoursRefusalReachesEnvelopeWithMessage(t *tes
 	require.True(t, errors.As(resp.err, &got), "turn runner must keep the *PeakHoursError reachable, got %v", resp.err)
 
 	res := buildRunResult("s1", "", "", "", resp.err, false, nil, 0, 0, time.Second, "", "", 0, "", "", nil, "")
-	require.Equal(t, "error", res.ExitReason)
+	require.Equal(t, "peak_hours", res.ExitReason)
+	require.NotEmpty(t, strings.TrimSpace(res.FinalText), "the pause must leave a readable final_text")
 	require.Contains(t, res.Error, "is in peak hours (")
 	require.Contains(t, res.Error, "RESUME AT:")
 	require.Contains(t, res.Error, pe.Message)

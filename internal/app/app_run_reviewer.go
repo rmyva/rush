@@ -540,8 +540,17 @@ func (s *executeRunLoop) finish(runErr error) (*RunResult, error) {
 			reconciled, reconcileErr = s.app.reconcileTerminalMessage(finalCtx, s.sess.ID, s.baselineIDs, s.baselineKnown, s.runStart, s.callResultRec.Resolve(), s.callResultRec.IDs())
 		}
 		if reconcileErr != nil {
-			s.reconciliationDiagnostic = "authoritative terminal message reconciliation failed: " + reconcileErr.Error() + "; using live run events"
-			slog.Warn("run: failed to reconcile authoritative terminal message", "session", s.sess.ID, "err", reconcileErr)
+			if isPeakHoursStop(runErr) {
+				// A peak-hours refusal stops the run before the provider
+				// answered this turn: no committed terminal assistant
+				// message was expected, so a failed lookup is the normal
+				// shape here, not a diagnostic. Keep the live run events
+				// (same fallback as below) without the misleading warning.
+				slog.Info("Run: no terminal message after a peak-hours refusal; using live run events", "session", s.sess.ID)
+			} else {
+				s.reconciliationDiagnostic = "authoritative terminal message reconciliation failed: " + reconcileErr.Error() + "; using live run events"
+				slog.Warn("run: failed to reconcile authoritative terminal message", "session", s.sess.ID, "err", reconcileErr)
+			}
 			s.foldLiveToolCallCounts()
 		} else {
 			// Replay the committed row through the normal output handler.

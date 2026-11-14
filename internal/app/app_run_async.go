@@ -508,7 +508,7 @@ func (l *cliLoop) closePhase() cliStepResult {
 		final, err := l.exit(l.runErr, "")
 		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	case result == nil:
-		final, err := l.exit(turnErr, "error")
+		final, err := l.exit(turnErr, incompleteExitReason(turnErr))
 		return cliStepResult{ev: evCloseEnded, final: final, err: err}
 	default:
 		l.tot.add(result)
@@ -695,7 +695,7 @@ func (l *cliLoop) drainPhase() cliStepResult {
 		}
 	}
 	if done, exitErr := l.afterDrain(result, err, buffered, usageBefore); done {
-		final, exitFinal := l.exit(exitErr, "error")
+		final, exitFinal := l.exit(exitErr, incompleteExitReason(exitErr))
 		return cliStepResult{ev: evDrainGaveUp, final: final, err: exitFinal}
 	}
 	return cliStepResult{ev: evDrainContinues}

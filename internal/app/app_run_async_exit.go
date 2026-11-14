@@ -108,3 +108,15 @@ func (l *cliLoop) exitPrecheck(err error) (*RunResult, error) {
 	}
 	return l.exit(err, reason)
 }
+
+// incompleteExitReason maps a run-terminating error onto the exit_reason of
+// the give-up exits that used to hard-code "error". The error's own
+// classification wins when it carries one (a peak-hours refusal carries
+// "peak_hours"); everything else stays "error".
+func incompleteExitReason(err error) string {
+	var inc *runIncompleteError
+	if errors.As(err, &inc) && inc.reason != "" {
+		return inc.reason
+	}
+	return "error"
+}
