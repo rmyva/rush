@@ -336,6 +336,21 @@ func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string,
 		return fmt.Errorf("failed to classify session %s: %w", sessionID, activityErr)
 	}
 	lock := activity.Facts.Lock
+	// The message read feeds both the honest at-rest reason below and the
+	// "Last assistant message" section -- one read, no second List.
+	msgs, msgsErr := a.Messages.List(ctx, sessionID)
+	lastFinish := ""
+	if msgsErr == nil {
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == message.Assistant {
+				if fin := msgs[i].FinishPart(); fin != nil {
+					lastFinish = string(fin.Reason)
+				}
+				break
+			}
+		}
+	}
+	label := sessionStatusLabel(activity.Verdict, activity.Facts.EndedReason)
 	status, reason := "at rest", "no live batch work"
 	switch {
 	case f.Unknown:
@@ -350,13 +365,20 @@ func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string,
 			}
 		}
 	case lock.Kind == session.LockHeld:
-		status = "running"
+		status = annotateRecordedEnd("running", activity.Facts.EndedReason)
 		reason = "the session lock is held by a live process"
-	case listStatus(activity.Verdict) != "":
-		status = listStatus(activity.Verdict)
+	case label != "":
+		status = label
 		reason = activity.Verdict.Description
 	default:
 		reason = activity.Verdict.Description
+		// A finished (end_turn) assistant turn is deliberately NOT a
+		// session-end signal (classifier decision 4), so the verdict stays
+		// idle -- but the reason must explain the contradiction instead of
+		// a bare "no recorded end" sentence (FIX-STATUS (b)).
+		if lastFinish == string(message.FinishReasonEndTurn) {
+			reason += "; the last assistant turn finished (end_turn) but no ended_reason is recorded: the run's exit write may have been dropped under database contention (see the rush log) or the loop was killed after the turn"
+		}
 	}
 	if !f.Unknown && status != "at rest" && activity.Verdict.Kind != session.ActivityCrashed &&
 		(activity.Verdict.CrashedPID > 0 || lock.Kind == session.LockDead) {
@@ -376,7 +398,6 @@ func explainWhyBatch(ctx context.Context, a *app.App, dataDir, sessionID string,
 	printStallHeader(ctx, a, dataDir, sessionID, status, lock, out)
 	fmt.Fprintf(out, "reason: %s.\n", reason)
 	renderBatchQuestionNote(f, out)
-	msgs, msgsErr := a.Messages.List(ctx, sessionID)
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Last assistant message:")
 	if msgsErr != nil {

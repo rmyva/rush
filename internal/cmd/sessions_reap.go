@@ -38,6 +38,16 @@ no PID, unprobed (probing would take the lock the owner needs for its next
 turn). Only locks that record a PID, which is what a crash leaves behind,
 are probed and reclaimed; reap exists to tidy those for operators.
 
+Ancient idle lock files are now reclaimed too: a PID-less lock whose mtime
+is older than --idle-older-than (default 7d; "0" disables idle reclaim) is
+removed with the same real OS-lock probe and the same POSIX/Windows unlink
+ordering as crash locks, plus an os.SameFile file-identity check
+immediately before the unlink (the path must still name the probed file; a
+path replaced under the probe is left untouched). The threshold keeps the
+probe away from any plausible between-turns wait: a loop that took a turn
+within the threshold leaves a younger mtime and is still kept unprobed.
+--dry-run lists idle candidates without touching or probing them.
+
 The legacy --all flag is accepted for backward compatibility but is now a
 no-op: a lock that records a PID is removed if (and only if) the OS-lock
 probe proves no live holder, regardless of --all; a lock with no readable
@@ -46,6 +56,7 @@ PID is kept.`,
 rush sessions reap
 rush sessions reap --dry-run
 rush sessions reap --all      # legacy no-op
+rush sessions reap --dry-run --idle-older-than 30d
   `,
 	RunE: sessionsReapCmdRun,
 }
@@ -65,16 +76,50 @@ var reapAfterProbeHook func(path string)
 // reapAfterUnlinkHook is a deterministic test seam invoked after successful unlink.
 var reapAfterUnlinkHook func(path string)
 
+// reapPreIdentitySeam is a deterministic test-only seam fired after the
+// probe lock is won and before the identity check; nil in production.
+var reapPreIdentitySeam func(path string)
+
+// reapLockIdentityLost reports whether lockPath no longer names the same
+// file it named at baseline: another process may have unlinked and
+// recreated the path between the pre-probe stat and the unlink, and
+// unlinking a path a NEW owner just created would hand them an unlinked
+// inode. Mirrors RemoveDeadHostFile's os.SameFile identity discipline
+// (internal/session/host_lock.go); any stat failure is treated as lost —
+// fail closed, keep the path untouched.
+func reapLockIdentityLost(baseline os.FileInfo, lockPath string) bool {
+	current, err := os.Stat(lockPath)
+	if err != nil {
+		return true
+	}
+	return !os.SameFile(baseline, current)
+}
+
 type reapItem struct {
 	Path   string
 	PID    int
 	AgeSec int
-	Action string // "remove-dead", "probe-candidate", "remove-unreadable", "skip-alive", "skip-young", "skip-released"
+	Action string // "remove-dead", "probe-candidate", "idle-candidate", "remove-unreadable", "skip-alive", "skip-young", "skip-released", "skip-probe-error", "skip-replaced"
 	Err    error
+	// Idle: the lock records no PID and is older than --idle-older-than.
+	Idle bool
+	// Baseline: a pre-probe stat paired against a fresh stat at unlink time
+	// (reapLockIdentityLost).
+	Baseline os.FileInfo
 }
 
 func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+	idleRaw, _ := cmd.Flags().GetString("idle-older-than")
+	var idleOlderThan time.Duration
+	if strings.TrimSpace(idleRaw) != "0" {
+		d, parseErr := parseAge(idleRaw)
+		if parseErr != nil {
+			return fmt.Errorf("invalid --idle-older-than %q: %w", idleRaw, parseErr)
+		}
+		idleOlderThan = d
+	}
 
 	cwd, err := ResolveCwd(cmd)
 	if err != nil {
@@ -155,13 +200,21 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 		// unlinks a path it will reuse (R8C-5; the same guard `sessions locks
 		// --prune` has). A crash leaves its PID in the file and is still swept.
 		if pid <= 0 {
-			item.Action = "skip-released"
-			items = append(items, item)
-			continue
+			if idleOlderThan > 0 && age >= idleOlderThan {
+				item.Idle = true
+			} else {
+				item.Action = "skip-released"
+				items = append(items, item)
+				continue
+			}
 		}
 
 		if dryRun {
-			item.Action = "probe-candidate"
+			if item.Idle {
+				item.Action = "idle-candidate"
+			} else {
+				item.Action = "probe-candidate"
+			}
 			items = append(items, item)
 			continue
 		}
@@ -178,10 +231,31 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 		// create a fresh inode at the same path and believe it owns the
 		// session — two owners of one session id. See internal/session/lock.go
 		// and lockHolderProvablyDead (sessions.go) for the full rationale.
+		// Baseline for the identity check: a fresh stat right before the probe,
+		// paired against the file at unlink time (see reapLockIdentityLost).
+		baselineInfo, baselineErr := os.Stat(path)
+		if baselineErr != nil {
+			item.Action = "skip-probe-error"
+			items = append(items, item)
+			continue
+		}
+		item.Baseline = baselineInfo
+
 		lk, probeErr := acquireReapProbe(dataDir, sessionID)
 		switch probeErr {
 		case nil:
 			item.Action = "remove-dead"
+			if reapPreIdentitySeam != nil {
+				reapPreIdentitySeam(path)
+			}
+			// Identity check while the probe lock is held: the path must still
+			// name the exact file this process just locked.
+			if reapLockIdentityLost(baselineInfo, path) {
+				_ = lk.Release()
+				item.Action = "skip-replaced"
+				items = append(items, item)
+				continue
+			}
 			// On Unix, unlink while holding flock: it is attached to the inode,
 			// so releasing first lets an owner acquire before the path is removed.
 			// Windows requires closing handles before unlink; the second probe
@@ -271,6 +345,12 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 					continue
 				}
 				_ = lk.Release()
+				// Identity check before removal (Windows path): the path must
+				// still name the file the second probe just won.
+				if reapLockIdentityLost(it.Baseline, it.Path) {
+					fmt.Fprintf(os.Stderr, "kept   lock %s (path no longer names the probed file; left untouched, age %ds)\n", filepath.Base(it.Path), it.AgeSec)
+					continue
+				}
 			}
 			action := "would remove"
 			if !dryRun {
@@ -290,18 +370,42 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 					action = "failed to remove (" + err.Error() + ")"
 				}
 			}
-			fmt.Fprintf(os.Stderr, "%s orphan lock %s (holder provably dead via OS lock, age %ds)\n",
-				action, filepath.Base(it.Path), it.AgeSec)
+			if it.Idle {
+				fmt.Fprintf(os.Stderr, "%s idle lock %s (no recorded PID, OS lock free, idle %s, over --idle-older-than %s)\n",
+					action, filepath.Base(it.Path), formatDurationShort(time.Duration(it.AgeSec)*time.Second), idleOlderThan)
+			} else {
+				fmt.Fprintf(os.Stderr, "%s orphan lock %s (holder provably dead via OS lock, age %ds)\n",
+					action, filepath.Base(it.Path), it.AgeSec)
+			}
 		case "removed":
-			fmt.Fprintf(os.Stderr, "removed orphan lock %s (holder provably dead via OS lock, age %ds)\n", filepath.Base(it.Path), it.AgeSec)
+			if it.Idle {
+				fmt.Fprintf(os.Stderr, "removed idle lock %s (no recorded PID, OS lock free, idle %s)\n", filepath.Base(it.Path), formatDurationShort(time.Duration(it.AgeSec)*time.Second))
+			} else {
+				fmt.Fprintf(os.Stderr, "removed orphan lock %s (holder provably dead via OS lock, age %ds)\n", filepath.Base(it.Path), it.AgeSec)
+			}
 		case "remove-failed":
-			fmt.Fprintf(os.Stderr, "failed to remove (%v) orphan lock %s (holder provably dead via OS lock, age %ds)\n", it.Err, filepath.Base(it.Path), it.AgeSec)
+			if it.Idle {
+				fmt.Fprintf(os.Stderr, "failed to remove (%v) idle lock %s (no recorded PID, OS lock free, idle %s, over --idle-older-than %s)\n", it.Err, filepath.Base(it.Path), formatDurationShort(time.Duration(it.AgeSec)*time.Second), idleOlderThan)
+			} else {
+				fmt.Fprintf(os.Stderr, "failed to remove (%v) orphan lock %s (holder provably dead via OS lock, age %ds)\n", it.Err, filepath.Base(it.Path), it.AgeSec)
+			}
 		case "probe-candidate":
 			fmt.Fprintf(os.Stderr, "would probe lock %s (aged PID recorded; candidate, age %ds)\n",
 				filepath.Base(it.Path), it.AgeSec)
-		case "skip-alive":
-			fmt.Fprintf(os.Stderr, "kept   live lock %s (OS lock held, age %ds)\n",
+		case "idle-candidate":
+			fmt.Fprintf(os.Stderr, "would remove idle lock %s (no recorded PID, not probed by dry-run, idle %s, over --idle-older-than %s)\n",
+				filepath.Base(it.Path), formatDurationShort(time.Duration(it.AgeSec)*time.Second), idleOlderThan)
+		case "skip-replaced":
+			fmt.Fprintf(os.Stderr, "kept   lock %s (path no longer names the probed file; left untouched, age %ds)\n",
 				filepath.Base(it.Path), it.AgeSec)
+		case "skip-alive":
+			if it.Idle {
+				fmt.Fprintf(os.Stderr, "kept   idle lock %s (OS lock held: a holder exists, age %ds)\n",
+					filepath.Base(it.Path), it.AgeSec)
+			} else {
+				fmt.Fprintf(os.Stderr, "kept   live lock %s (OS lock held, age %ds)\n",
+					filepath.Base(it.Path), it.AgeSec)
+			}
 		case "skip-probe-error":
 			fmt.Fprintf(os.Stderr, "kept   lock %s (probe inconclusive; left untouched, age %ds)\n",
 				filepath.Base(it.Path), it.AgeSec)
@@ -316,6 +420,9 @@ func sessionsReapCmdRun(cmd *cobra.Command, args []string) error {
 
 	if dryRun {
 		fmt.Fprintf(os.Stderr, "(dry-run; %d lock(s) would be probed)\n", countAction(items, "probe-candidate"))
+		if idleCount := countAction(items, "idle-candidate"); idleCount > 0 {
+			fmt.Fprintf(os.Stderr, "(dry-run; %d idle lock(s) would be removed over --idle-older-than %s)\n", idleCount, idleOlderThan)
+		}
 	} else {
 		// Say it, rather than just going quiet: once the budget is gone the
 		// later locks got a single attempt each, so a failure below that
@@ -370,4 +477,5 @@ func countAction(items []reapItem, action string) int {
 func init() {
 	sessionsReapCmd.Flags().Bool("dry-run", false, "Print what would be reclaimed without removing anything")
 	sessionsReapCmd.Flags().Bool("all", false, "Legacy no-op: removal is now decided solely by the real OS-lock probe, so a lock that records a PID is reaped iff proven uncontended regardless of this flag")
+	sessionsReapCmd.Flags().String("idle-older-than", "168h", "Age threshold for reclaiming idle (PID-less) lock files, e.g. 168h, 7d, 4w; \"0\" disables idle reclaim. Default 168h (7 days)")
 }

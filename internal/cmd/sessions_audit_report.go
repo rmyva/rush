@@ -26,6 +26,42 @@ type auditDBReport struct {
 	// Batch is the additive flag-on block: batch facts from batch_nodes and
 	// the unfinished_jobs rule's status. Absent with the flag off.
 	Batch *auditBatchReport `json:"batch,omitempty"`
+	// Summary is the always-present scan total (text line + JSON object).
+	Summary auditSummary `json:"summary"`
+}
+
+// auditSummary is the honest total of one scanned database: how many sessions
+// the scan covered, how many tripped at least one rule, how many were clean.
+// It is always present — a run whose output ends after the session table is a
+// clean scan, never a truncated one.
+type auditSummary struct {
+	Scanned      int `json:"scanned"`
+	WithFindings int `json:"with_findings"`
+	Clean        int `json:"clean"`
+}
+
+// auditReportSummary totals one scan. Clean is derived from the other two
+// numbers, so the three can never disagree; findings name only scanned
+// sessions, so WithFindings never exceeds Scanned.
+func auditReportSummary(rows []auditSessionRow, findings []auditFinding) auditSummary {
+	summary := auditSummary{Scanned: len(rows)}
+	suspicious := make(map[string]bool, len(findings))
+	for _, finding := range findings {
+		suspicious[finding.SessionID] = true
+	}
+	summary.WithFindings = len(suspicious)
+	summary.Clean = summary.Scanned - summary.WithFindings
+	return summary
+}
+
+// auditPrintSummary is the one line every report ends with, plus the explicit
+// "no anomalies" a clean scan must say out loud.
+func auditPrintSummary(w io.Writer, summary auditSummary) {
+	fmt.Fprintf(w, "scanned %d sessions: %d with findings, %d clean\n",
+		summary.Scanned, summary.WithFindings, summary.Clean)
+	if summary.WithFindings == 0 {
+		fmt.Fprintln(w, "no anomalies")
+	}
 }
 
 // auditPrintReports writes every scanned database, either as text or as a
@@ -56,6 +92,7 @@ func auditPrintText(w io.Writer, report auditDBReport) error {
 	// A notice is the whole report: a missing database or an ambiguous
 	// prefix has no health or sessions to print after it.
 	if len(report.Notices) > 0 {
+		auditPrintSummary(w, report.Summary)
 		return nil
 	}
 
@@ -71,6 +108,7 @@ func auditPrintText(w io.Writer, report auditDBReport) error {
 
 	if len(report.Sessions) == 0 {
 		fmt.Fprintln(w, "(no sessions)")
+		auditPrintSummary(w, report.Summary)
 		return nil
 	}
 
@@ -93,6 +131,7 @@ func auditPrintText(w io.Writer, report auditDBReport) error {
 			finding.Rule, short(finding.SessionID), finding.Detail, finding.Count)
 	}
 	report.Batch.printText(w)
+	auditPrintSummary(w, report.Summary)
 	return nil
 }
 

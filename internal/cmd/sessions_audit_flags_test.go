@@ -3,14 +3,15 @@ package cmd
 // The flag surface of `rush sessions audit`: what each flag adds to the scan.
 // --worktrees is the only one that widens the scan beyond a single database,
 // and it does so through the registered project list — so the registry has
-// to be isolated rather than trusted. --since narrows which messages the
-// rules count without narrowing what the report describes, and --json is the
-// shape a script reads, so it has to carry the findings themselves.
+// to be isolated rather than trusted. --since narrows both what the rules
+// count and which sessions --all scans, and --json is the shape a script
+// reads, so it has to carry the findings themselves.
 //
-// The --since window itself (old/recent/mixed evidence against the
-// repeated-view rule) is already proved by TestAuditRules_SinceWindow in
-// sessions_audit_rules_test.go; what is left over is that the window bounds
-// the analysis only, and that it is not specific to one rule.
+// The --since window itself over the per-rule counts (old/recent/mixed
+// evidence against the repeated-view rule) is already proved by
+// TestAuditRules_SinceWindow in sessions_audit_rules_test.go; what is left
+// over here is that the window bounds which sessions are scanned and listed
+// at all, and that it is not specific to one rule.
 
 import (
 	"encoding/json"
@@ -113,50 +114,76 @@ func TestSessionsAudit_WorktreesScansEveryRegisteredDatabase(t *testing.T) {
 	require.Len(t, reports, 2, "a skipped worktree is not a report")
 }
 
-// TestSessionsAudit_SinceLimitsTheWindowNotTheReport: --since bounds which
-// messages the rules count, not which databases and sessions the audit
-// describes. A database whose every message is outside the window is still
-// audited — it is reported, with its health and its session list, and simply
-// has nothing suspicious to say inside the window.
-func TestSessionsAudit_SinceLimitsTheWindowNotTheReport(t *testing.T) {
-	const session = "audit-since-flags-1"
+// TestSessionsAudit_SinceLimitsScannedSessions: --since narrows BOTH what the
+// rules count and which sessions --all scans — a session whose every message
+// is older than the window is not scanned and not listed, so the session
+// table, the findings and the summary describe the same window. DB health is
+// file-level and stays in every report.
+//
+// Revert-check: removing auditRecentSessionsFilter from auditSelectSessions
+// (the old behaviour: --all lists every session regardless of the window)
+// turns the stale-fixture assertions below red — the old-only session comes
+// back into reports[0].Sessions and "(no sessions)" disappears.
+func TestSessionsAudit_SinceLimitsScannedSessions(t *testing.T) {
+	const stale = "audit-since-stale-1"
+	const fresh = "audit-since-fresh-1"
 
 	old := time.Now().Add(-72 * time.Hour).Unix()
 	recent := time.Now().Add(-time.Minute).Unix()
 
-	wait := func(createdAt int64) auditMessageFixture {
+	wait := func(sessionID string, createdAt int64) auditMessageFixture {
 		return auditMessageFixture{
-			SessionID: session,
+			SessionID: sessionID,
 			Parts:     auditToolCall(t, "bash", map[string]any{"command": "sleep 5"}),
 			CreatedAt: createdAt,
 		}
 	}
-	notice := func(kind string, createdAt int64) auditMessageFixture {
-		return auditMessageFixture{SessionID: session, NoticeKind: kind, CreatedAt: createdAt}
-	}
 
-	// Three waits older than the window: nothing inside it to count.
-	stale := auditRulesFixture{Messages: []auditMessageFixture{wait(old), wait(old + 1), wait(old + 2)}}
-	_, reports := auditRunRulesAll(t, stale, "--since", "24h")
-	require.Empty(t, reports[0].Findings, "a wait outside the window is not counted")
-	require.NotEmpty(t, reports[0].Sessions,
-		"--since narrows the analysis, not the sessions the audit describes")
-	require.NotNil(t, reports[0].Health, "DB health is not part of the window")
+	// One session with only out-of-window messages, one with a message
+	// inside the window.
+	fixture := auditRulesFixture{Messages: []auditMessageFixture{
+		wait(stale, old), wait(stale, old+1), wait(stale, old+2),
+		wait(fresh, recent),
+	}}
 
-	// The same three waits inside the window: the rule fires.
-	fresh := auditRulesFixture{Messages: []auditMessageFixture{wait(recent), wait(recent + 1), wait(recent + 2)}}
-	stdout, _ := auditRunRulesAll(t, fresh, "--since", "24h")
-	require.Contains(t, stdout, auditFindingLine("wait_only", session, "sleep N", 3))
+	// With a window, the stale session is not scanned, not listed, not
+	// counted and not summarized — only the fresh one is described.
+	stdout, reports := auditRunRulesAll(t, fixture, "--since", "24h")
+	require.Len(t, reports[0].Sessions, 1, "stdout: %s", stdout)
+	require.Equal(t, fresh, reports[0].Sessions[0].ID,
+		"the session with an in-window message is the only one scanned")
+	require.NotContains(t, stdout, stale,
+		"a session with nothing inside the window is not listed at all")
+	require.Empty(t, auditFindingsForRule(reports, "wait_only"),
+		"three out-of-window sleeps cannot be counted against the window")
+	require.Equal(t, auditSummary{Scanned: 1, WithFindings: 0, Clean: 1},
+		reports[0].Summary, "the summary counts the window, not the database")
+	require.Contains(t, stdout, "scanned 1 sessions: 0 with findings, 1 clean")
+	require.Contains(t, stdout, "no anomalies",
+		"a window with nothing suspicious in it says so out loud")
+	require.NotNil(t, reports[0].Health, "DB health is file-level and survives the window")
 
-	// The window is not specific to one rule: a threshold-one rule obeys it
-	// exactly the same way.
-	noticeOld := auditRulesFixture{Messages: []auditMessageFixture{notice("supervision", old)}}
-	stdout, _ = auditRunRulesAll(t, noticeOld, "--since", "24h")
-	require.NotContains(t, stdout, "notices", "a notice outside the window is not counted")
+	// Without a window, both sessions are scanned and summarized — and the
+	// stale session's three sleeps are counted again, so this run is the
+	// contrast case for the windowed one above.
+	stdout, reports = auditRunRulesAll(t, fixture)
+	require.Len(t, reports[0].Sessions, 2, "no window: every session is scanned")
+	require.Len(t, auditFindingsForRule(reports, "wait_only"), 1,
+		"without a window the stale session's three sleeps are a finding again")
+	require.Equal(t, auditSummary{Scanned: 2, WithFindings: 1, Clean: 1},
+		reports[0].Summary)
+	require.Contains(t, stdout, "scanned 2 sessions: 1 with findings, 1 clean")
 
-	noticeRecent := auditRulesFixture{Messages: []auditMessageFixture{notice("supervision", recent)}}
-	stdout, _ = auditRunRulesAll(t, noticeRecent, "--since", "24h")
-	require.Contains(t, stdout, auditFindingLine("notices", session, "supervision", 1))
+	// A database whose every message is outside the window is still audited —
+	// it reports honestly that it scanned nothing inside the window.
+	staleOnly := auditRulesFixture{Messages: []auditMessageFixture{
+		wait(stale, old), wait(stale, old+1), wait(stale, old+2),
+	}}
+	stdout, reports = auditRunRulesAll(t, staleOnly, "--since", "24h")
+	require.Empty(t, reports[0].Sessions, "nothing inside the window is scanned")
+	require.Contains(t, stdout, "(no sessions)")
+	require.Contains(t, stdout, "scanned 0 sessions: 0 with findings, 0 clean")
+	require.Contains(t, stdout, "no anomalies")
 }
 
 // TestSessionsAudit_JSONCarriesFindings: --json is what a script reads, so it

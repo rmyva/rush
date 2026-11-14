@@ -37,6 +37,9 @@ Status guidance:
                ended_reason is recorded. A finish such as end_turn only
                finishes an assistant turn; it is not by itself a session-end
                or task-completion signal.
+  paused     — the recorded ended_reason is peak_hours (a provider
+               peak-hours pause); nothing is live and no crash fact
+               applies. Rendered "paused: provider peak hours".
   crashed    — a dead session-lock PID or driver marker naming a
                dead host is recorded, and neither live work nor incomplete
                batch evidence takes precedence.
@@ -49,6 +52,12 @@ Status guidance:
   batch unknown — the batch read was incomplete; live batch work is unknown.
   at rest    — no live work or incomplete batch evidence is found, no crash
                fact takes precedence, and no ended_reason is recorded.
+
+An ended_reason outside this binary's known vocabulary renders verbatim
+(never as done). A live status with a recorded ended_reason annotates it as
+"(exit <reason>)" — the same exit fact "sessions status" reports. An "at
+rest" verdict with a finished (end_turn) last assistant turn explains that
+contradiction in its reason line instead of a bare no-end sentence.
 
 A stale/dead recorded PID is only an annotation when live work exists; it
 does not override that work. The last assistant finish_reason is shown as

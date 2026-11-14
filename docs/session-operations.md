@@ -12,7 +12,7 @@ rush sessions watch <session-id>
 rush sessions locks <session-id>
 ```
 
-Lock listings are read-only by default. Heartbeat age alone does not prove death, especially between turns. The opt-in `sessions locks --prune` removes only a lock proven to have no live OS holder. `watch` tails messages and remains open for live work between turns; interrupting it stops watching, not the session.
+Lock listings are read-only by default. Heartbeat age alone does not prove death, especially between turns. The opt-in `sessions locks --prune` removes only a lock proven to have no live OS holder. The default `sessions locks` view also collapses idle lock files — no holder PID recorded, offline pulse, no live-driver evidence, i.e. what a clean release leaves behind — into a single summary line; `--all` lists them anyway, and `--json` output ends with a `{"summary":{...}}` object carrying the collapse count. `sessions reap` additionally reclaims ancient idle lock files: a PID-less file whose mtime is older than `--idle-older-than` (default 7d) is removed only after the same real OS-lock probe plus a file-identity check immediately before unlinking, and `--dry-run` previews the candidates without touching or probing them. `watch` tails messages and remains open for live work between turns; interrupting it stops watching, not the session.
 
 `end_turn` finishes an assistant turn, not the session or every task it started. `between_turns` means live work still holds the session open. An `unknown` batch/session read is incomplete evidence, not proof of absence, idleness, or completion. In batch state, `cancelling` is nonterminal until termination is confirmed; a stop request or accepted acknowledgement is not that confirmation. Check the batch tree with `rush batch show <root-id>` and use terminal node/root states and their outcomes to determine task completion.
 
@@ -42,6 +42,14 @@ There are two child-agent question paths; use the matching one:
 `rush batch run` runs unattended in the owning process and waits synchronously for its root to settle. It has no question-answer surface; use the served batch intake when held questions need an answer route. `--detach` is unsupported. `rush batch add` requires the owner process and refuses from another process; separate processes can inspect or request stop through the supported CLI controls. A stop is cancellation intent; even an accepted request does not mean the task has physically terminated.
 
 Startup and periodic maintenance perform bounded dead-host recovery. Only a host proven dead is recovered: live work in retained CLI roots is interrupted and its controls are closed; unannounced non-CLI reservations may be deleted, while CLI roots are retained. This recovery records interrupted work; it does not replay or automatically resubmit it. A new execution requires a new, explicit submission. The scan is bounded and can continue on a later pass, so inspect current batch state rather than interpreting one pass or a missing read as successful completion. This is distinct from the one-time database import/upgrade procedure, where the documented requeued imported work can repeat external side effects.
+
+## Session audit
+
+`rush sessions audit` inspects session stores for suspicion patterns (repeated file views, repeated commands, wait-only loops, repeated tool errors, notices) and is read-only: it never writes to the database and creates nothing in the data directory.
+
+`--since 24h` is a window over message timestamps: it narrows both which messages the rules count and which sessions `--all` scans. A session whose every message is older than the window is not scanned and not printed, so the session table, the findings and the summary all describe the same window.
+
+Every report ends with the same total line — `scanned N sessions: M with findings, K clean` — and a clean scan additionally prints `no anomalies`. The `--json` output carries a `summary` object (`scanned`, `with_findings`, `clean`) per scanned database; it is present even for the notice-only report a missing store file produces.
 
 ## The two compaction boundaries
 

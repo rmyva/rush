@@ -41,6 +41,11 @@ func TestSessionsAuditHelp_StatesTheReadOnlyContract(t *testing.T) {
 	// it, it is not registered twice.
 	require.Nil(t, sessionsAuditCmd.PersistentFlags().Lookup("data-dir"),
 		"--data-dir must not be re-registered on the subcommand")
+
+	require.Contains(t, long, "scanned N sessions", "the help must document the always-printed summary line")
+	require.Contains(t, long, "no anomalies", "the help must document the explicit clean-scan line")
+	require.Contains(t, oneLine(sessionsAuditCmd.Flags().Lookup("since").Usage), "not scanned",
+		"the help must say --since also decides which sessions --all scans")
 }
 
 // TestSessionsAuditHelp_DeclaresTheRulesAndTheirThresholds: the help lists

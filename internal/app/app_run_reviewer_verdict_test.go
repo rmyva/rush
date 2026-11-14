@@ -36,15 +36,11 @@ import (
 // value RunResult.ReviewVerdict carries, including the empty string for a
 // review that never answered the question.
 //
-// Two of the rows are deliberate documentation of the pattern's actual
-// behaviour rather than of an intention:
-//
-//   - "   VERDICT: PASS" (leading spaces) still parses as "pass", because
-//     the pattern anchors with ^\W*VERDICT: and a space is \W. The leading
-//     whitespace is consumed, not rejected.
-//   - the "verdict: pass" lowercase row does NOT parse: the keyword is
-//     matched case-sensitively, so a reviewer that lowercases the label
-//     gets "unparsed" instead of a silent pass.
+// One row deliberately documents, rather than intends, the leading-space
+// case: "   VERDICT: PASS" parses as "pass" because \W* swallows whitespace
+// prefixes. Since the 2026-11-13 fix-audit the keyword's case is ignored
+// (format noise), and a review with no verdict line at all is still ""
+// (fail-closed).
 func TestParseReviewVerdict(t *testing.T) {
 	t.Parallel()
 
@@ -101,10 +97,12 @@ func TestParseReviewVerdict(t *testing.T) {
 			want: "fail",
 		},
 		{
-			// The keyword is case-sensitive.
-			name: "lowercased verdict is not a verdict",
+			// The keyword's case is format noise (2026-11-13 fix-audit):
+			// "verdict: pass" is a pass. Fail-closed is untouched — a review
+			// with no verdict line at all is still "".
+			name: "lowercased verdict still parses",
 			text: "verdict: pass\n\n## Findings\n",
-			want: "",
+			want: "pass",
 		},
 	}
 

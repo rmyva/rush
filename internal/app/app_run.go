@@ -464,9 +464,11 @@ func (app *App) ExecuteRun(ctx context.Context, req RunRequest) (result *RunResu
 		if reason == "" {
 			reason = "done"
 		}
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), cleanupTimeout)
-		defer cleanupCancel()
-		if setErr := app.Sessions.SetEndedReason(cleanupCtx, sess.ID, reason); setErr != nil {
+		// Same retry contract as the loop's persistEndedReason: a one-shot
+		// 2s budget was observed dropping the write under concurrent exits.
+		if setErr := writeEndedReasonWithRetry(context.Background(), func(ctx context.Context) error {
+			return app.Sessions.SetEndedReason(ctx, sess.ID, reason)
+		}); setErr != nil {
 			slog.Warn("Failed to persist ended_reason", "session_id", sess.ID, "reason", reason, "err", setErr)
 		}
 	}()

@@ -42,19 +42,74 @@ func auditScanBatchFacts(ctx context.Context, conn *sql.DB, dataDir string, ids 
 	reader := session.NewBatchLiveReader(db.New(conn), dataDir)
 	queries := db.New(conn)
 	facts := reduceBatchSessionFacts(ctx, reader, session.NewBatchStore(conn), queries, ids)
-	counts := make(map[string]map[string]int64, len(ids))
-	for _, id := range ids {
-		rows, err := queries.BatchHistoryStateCounts(ctx, id)
-		if err != nil {
-			return nil, fmt.Errorf("query batch_nodes state counts: %w", err)
-		}
-		byState := make(map[string]int64, len(rows))
-		for _, row := range rows {
-			byState[row.State] = row.Count
-		}
-		counts[id] = byState
+	counts, err := auditBatchStateCounts(ctx, conn, ids)
+	if err != nil {
+		return nil, err
 	}
 	return &auditBatchScan{Facts: facts, StateCounts: counts}, nil
+}
+
+// auditBatchStateCounts reads every selected session's per-state task counts
+// with ONE grouped query per chunk. The per-owner query
+// (db.Queries.BatchHistoryStateCounts) has no index that fits it — its WHERE
+// has no node_id = root_id, so every partial index on batch_nodes is unusable
+// and each call is a full scan; an --all over 2000+ sessions paid that scan
+// once per session. Grouping by owner keeps the exact per-session numbers the
+// per-owner loop produced.
+func auditBatchStateCounts(ctx context.Context, conn *sql.DB, ids []string) (map[string]map[string]int64, error) {
+	counts := make(map[string]map[string]int64, len(ids))
+	for start := 0; start < len(ids); start += auditQueryChunk {
+		end := start + auditQueryChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		query := "SELECT owner_session_id, state, count(*) AS count FROM batch_nodes" +
+			" WHERE owner_session_id IN (" + auditPlaceholders(len(chunk)) + ")" +
+			" AND kind = 'task' GROUP BY owner_session_id, state"
+		params := make([]any, 0, len(chunk))
+		for _, id := range chunk {
+			params = append(params, id)
+		}
+		if err := auditScanBatchStateCounts(ctx, conn, query, params, counts); err != nil {
+			return nil, err
+		}
+	}
+	// A session with no batch rows keeps an empty (non-nil) map, exactly as
+	// the per-owner loop did, so the JSON block's shape is unchanged.
+	for _, id := range ids {
+		if counts[id] == nil {
+			counts[id] = map[string]int64{}
+		}
+	}
+	return counts, nil
+}
+
+// auditScanBatchStateCounts folds one grouped query's rows into counts.
+func auditScanBatchStateCounts(ctx context.Context, conn *sql.DB, query string, params []any, counts map[string]map[string]int64) error {
+	rows, err := conn.QueryContext(ctx, query, params...)
+	if err != nil {
+		return fmt.Errorf("query batch_nodes state counts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			owner string
+			state string
+			count int64
+		)
+		if err := rows.Scan(&owner, &state, &count); err != nil {
+			return fmt.Errorf("scan batch state count: %w", err)
+		}
+		if counts[owner] == nil {
+			counts[owner] = make(map[string]int64, 8)
+		}
+		counts[owner][state] = count
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate batch state counts: %w", err)
+	}
+	return nil
 }
 
 // unfinishedEntries names the batch work a session left unfinished, one
